@@ -1,12 +1,12 @@
 <script>
   import { Crosshair, Layers, ChevronRight } from '@lucide/svelte'
-  import { responders } from '$lib/data.js'
 
   let {
     height = 'h-[228px]',
     radiusLabel = 'Live · 1 km radius',
     showFooter = true,
     onopen,
+    responders = [],
   } = $props()
 
   const pins = [
@@ -192,10 +192,21 @@
             >{person.initials}</span
           >
         {/each}
+        {#if responders.length === 0}
+          <span
+            class="grid h-7 w-7 place-items-center rounded-full bg-[#E3E6EA] text-[9px] font-bold text-muted ring-2 ring-white"
+            >—</span
+          >
+        {/if}
       </div>
       <div class="min-w-0 flex-1">
-        <p class="text-[12.5px] font-semibold leading-tight text-ink">4 responders nearby</p>
-        <p class="text-[11px] leading-tight text-muted">Closest is 180 m away</p>
+        {#if responders.length > 0}
+          <p class="text-[12.5px] font-semibold leading-tight text-ink">{responders.length} responders nearby</p>
+          <p class="text-[11px] leading-tight text-muted">Closest is 180 m away</p>
+        {:else}
+          <p class="text-[12.5px] font-semibold leading-tight text-ink">No responders nearby</p>
+          <p class="text-[11px] leading-tight text-muted">Coverage updates in real time</p>
+        {/if}
       </div>
       <ChevronRight size={17} class="text-muted" />
     </button>

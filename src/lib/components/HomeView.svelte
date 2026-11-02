@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte'
   import {
     Bell,
     ChevronDown,
@@ -15,9 +16,36 @@
     Siren,
   } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
-  import { user, responders, alertHistory } from '$lib/data.js'
+  import { contacts } from '$lib/api.js'
 
-  let { onnavigate, onviewalert, showIncoming = true, ondismissincoming, onnotify } = $props()
+  let { user, onnavigate, onviewalert, showIncoming = true, ondismissincoming, onnotify } = $props()
+
+  const name = $derived(user?.name || user?.fullName || 'there')
+  const initials = $derived(
+    user?.initials ||
+      (user?.name
+        ? user.name
+            .split(/\s+/)
+            .slice(0, 2)
+            .map((w) => w[0]?.toUpperCase())
+            .join('')
+        : '—'),
+  )
+  const area = $derived(user?.area || 'Kemang, Jakarta Selatan')
+
+  let contactCount = $state(null)
+
+  onMount(async () => {
+    try {
+      const data = await contacts.list()
+      contactCount = Array.isArray(data) ? data.length : data?.length ?? 0
+    } catch {
+      contactCount = 0
+    }
+  })
+
+  const responders = $state([])
+  const alertHistory = $state([])
 
   const now = new Date()
   const hour = now.getHours()
@@ -28,11 +56,17 @@
     month: 'long',
   })
 
-  const quickActions = [
+  const quickActions = $derived([
     { id: 'call', label: 'Call 112', hint: 'Emergency', icon: Phone, tone: 'bg-[#FFECEB] text-sos' },
     { id: 'share', label: 'Share location', hint: 'Live 60 min', icon: Send, tone: 'bg-[#EAF0FF] text-[#2F6BFF]' },
-    { id: 'contacts', label: 'Contacts', hint: '4 people', icon: Users, tone: 'bg-[#E9F7F1] text-safe' },
-  ]
+    {
+      id: 'contacts',
+      label: 'Contacts',
+      hint: contactCount != null ? `${contactCount} ${contactCount === 1 ? 'person' : 'people'}` : '—',
+      icon: Users,
+      tone: 'bg-[#E9F7F1] text-safe',
+    },
+  ])
 
   function runAction(id) {
     if (id === 'contacts') {
@@ -72,7 +106,7 @@
         aria-label="Open profile"
         onclick={() => onnavigate?.('profile')}
         class="grid h-9 w-9 place-items-center rounded-full bg-[#1F2937] text-[11px] font-bold text-white ring-2 ring-white transition active:scale-95"
-        >{user.initials}</button
+        >{initials}</button
       >
     </div>
   </header>
@@ -81,14 +115,14 @@
   <div class="mt-5">
     <p class="text-[12px] font-medium text-muted">{today}</p>
     <h1 class="mt-1 text-[26px] font-semibold leading-[1.15] tracking-[-0.035em]">
-      {greeting}, {user.name}
+      {greeting}, {name}
     </h1>
     <button
       type="button"
       class="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-ink/80 ring-1 ring-black/5 transition hover:text-ink active:scale-95"
     >
       <MapPin size={12} class="text-sos" strokeWidth={2.6} />
-      {user.area}
+      {area}
       <ChevronDown size={12} class="text-muted" />
     </button>
   </div>
@@ -122,14 +156,25 @@
     <div class="relative mt-4 flex items-center justify-between border-t border-white/10 pt-3.5">
       <div class="flex items-center gap-2">
         <div class="flex -space-x-2">
-          {#each responders.slice(0, 3) as person}
+          {#if responders.length > 0}
+            {#each responders.slice(0, 3) as person}
+              <span
+                class="grid h-6 w-6 place-items-center rounded-full text-[8px] font-bold ring-2 ring-[#101216] {person.tone}"
+                >{person.initials}</span
+              >
+            {/each}
+          {:else}
             <span
-              class="grid h-6 w-6 place-items-center rounded-full text-[8px] font-bold ring-2 ring-[#101216] {person.tone}"
-              >{person.initials}</span
+              class="grid h-6 w-6 place-items-center rounded-full bg-white/15 text-[8px] font-bold text-white/60 ring-2 ring-[#101216]"
+              >—</span
             >
-          {/each}
+          {/if}
         </div>
-        <span class="text-[11px] font-medium text-white/60">+1 nearby</span>
+        {#if responders.length > 0}
+          <span class="text-[11px] font-medium text-white/60">+{Math.max(responders.length - 3, 1)} nearby</span>
+        {:else}
+          <span class="text-[11px] font-medium text-white/60">No responders online</span>
+        {/if}
       </div>
       <button
         type="button"
@@ -226,35 +271,42 @@
     </div>
 
     <div class="card mt-3 divide-y divide-line/80 overflow-hidden">
-      {#each responders.slice(0, 3) as person}
-        <button
-          type="button"
-          class="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-[#FAFBFC]"
-        >
-          <span class="relative">
-            <span class="grid h-10 w-10 place-items-center rounded-full text-[12px] font-bold {person.tone}"
-              >{person.initials}</span
-            >
-            <span
-              class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-safe ring-2 ring-white"
-            ></span>
-          </span>
-          <span class="min-w-0 flex-1">
-            <span class="flex items-center gap-1">
-              <span class="truncate text-[13px] font-semibold text-ink">{person.name}</span>
-              {#if person.verified}
-                <BadgeCheck size={13} class="shrink-0 text-[#2F6BFF]" strokeWidth={2.3} />
-              {/if}
-            </span>
-            <span class="mt-0.5 block text-[11px] text-muted">{person.role} · {person.distance}</span>
-          </span>
-          <span
-            class="grid h-8 w-8 place-items-center rounded-full bg-[#F5F6F8] text-ink/60 transition hover:bg-ink hover:text-white"
+      {#if responders.length > 0}
+        {#each responders.slice(0, 3) as person}
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-[#FAFBFC]"
           >
-            <ChevronRight size={15} />
-          </span>
-        </button>
-      {/each}
+            <span class="relative">
+              <span class="grid h-10 w-10 place-items-center rounded-full text-[12px] font-bold {person.tone}"
+                >{person.initials}</span
+              >
+              <span
+                class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-safe ring-2 ring-white"
+              ></span>
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="flex items-center gap-1">
+                <span class="truncate text-[13px] font-semibold text-ink">{person.name}</span>
+                {#if person.verified}
+                  <BadgeCheck size={13} class="shrink-0 text-[#2F6BFF]" strokeWidth={2.3} />
+                {/if}
+              </span>
+              <span class="mt-0.5 block text-[11px] text-muted">{person.role} · {person.distance}</span>
+            </span>
+            <span
+              class="grid h-8 w-8 place-items-center rounded-full bg-[#F5F6F8] text-ink/60 transition hover:bg-ink hover:text-white"
+            >
+              <ChevronRight size={15} />
+            </span>
+          </button>
+        {/each}
+      {:else}
+        <div class="px-4 py-8 text-center">
+          <p class="text-[12.5px] font-semibold text-ink">No responders nearby</p>
+          <p class="mt-1 text-[11px] text-muted">Coverage updates in real time.</p>
+        </div>
+      {/if}
     </div>
   </section>
 
@@ -270,34 +322,41 @@
     </div>
 
     <div class="card mt-3 divide-y divide-line/80 overflow-hidden">
-      {#each alertHistory.slice(0, 2) as item}
-        <button
-          type="button"
-          onclick={() => onnavigate?.('alerts')}
-          class="flex w-full items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[#FAFBFC]"
-        >
-          <span
-            class="grid h-9 w-9 place-items-center rounded-full {item.type === 'sent'
-              ? 'bg-[#FFECEB] text-sos'
-              : 'bg-[#E9F7F1] text-safe'}"
+      {#if alertHistory.length > 0}
+        {#each alertHistory.slice(0, 2) as item}
+          <button
+            type="button"
+            onclick={() => onnavigate?.('alerts')}
+            class="flex w-full items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[#FAFBFC]"
           >
-            {#if item.type === 'sent'}
-              <ArrowUpRight size={15} strokeWidth={2.4} />
-            {:else}
-              <Radio size={15} strokeWidth={2.2} />
-            {/if}
-          </span>
-          <span class="min-w-0 flex-1">
-            <span class="block truncate text-[12.5px] font-semibold text-ink">{item.title}</span>
-            <span class="mt-0.5 block text-[11px] text-muted">{item.date} · {item.time} · {item.place}</span>
-          </span>
-          <span
-            class="rounded-full px-2 py-1 text-[9.5px] font-semibold {item.status === 'Cancelled'
-              ? 'bg-[#F3F4F6] text-muted'
-              : 'bg-[#E9F7F1] text-[#087a54]'}">{item.status}</span
-          >
-        </button>
-      {/each}
+            <span
+              class="grid h-9 w-9 place-items-center rounded-full {item.type === 'sent'
+                ? 'bg-[#FFECEB] text-sos'
+                : 'bg-[#E9F7F1] text-safe'}"
+            >
+              {#if item.type === 'sent'}
+                <ArrowUpRight size={15} strokeWidth={2.4} />
+              {:else}
+                <Radio size={15} strokeWidth={2.2} />
+              {/if}
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-[12.5px] font-semibold text-ink">{item.title}</span>
+              <span class="mt-0.5 block text-[11px] text-muted">{item.date} · {item.time} · {item.place}</span>
+            </span>
+            <span
+              class="rounded-full px-2 py-1 text-[9.5px] font-semibold {item.status === 'Cancelled'
+                ? 'bg-[#F3F4F6] text-muted'
+                : 'bg-[#E9F7F1] text-[#087a54]'}">{item.status}</span
+            >
+          </button>
+        {/each}
+      {:else}
+        <div class="px-4 py-8 text-center">
+          <p class="text-[12.5px] font-semibold text-ink">No recent activity</p>
+          <p class="mt-1 text-[11px] text-muted">Sent and received alerts will appear here.</p>
+        </div>
+      {/if}
     </div>
   </section>
 

@@ -16,7 +16,26 @@
     PhoneCall,
     Users,
   } from '@lucide/svelte'
-  import { user } from '$lib/data.js'
+  import { user as mockUser } from '$lib/data.js'
+
+  let { user = mockUser, onsignout } = $props()
+
+  const name = $derived(user?.name || '')
+  const fullName = $derived(user?.fullName || name || '—')
+  const initials = $derived(
+    user?.initials ||
+      (name
+        ? name
+            .split(/\s+/)
+            .slice(0, 2)
+            .map((w) => w[0]?.toUpperCase())
+            .join('')
+        : '—'),
+  )
+  const trustScore = $derived(user?.trustScore ?? 100)
+  const memberSince = $derived(
+    user?.memberSince || (user?.created_at ? new Date(user.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : '—'),
+  )
 
   let settings = $state({
     location: true,
@@ -88,7 +107,7 @@
       <div class="relative z-10 -mt-7 flex items-end justify-between">
         <span
           class="grid h-14 w-14 place-items-center rounded-full bg-gradient-to-br from-[#5B8CFF] to-[#2F55D4] text-[16px] font-bold text-white ring-4 ring-white shadow-md"
-          >{user.initials}</span
+          >{initials}</span
         >
         <button
           type="button"
@@ -101,13 +120,13 @@
 
       <div class="mt-2.5">
         <div class="flex items-center gap-1.5">
-          <h2 class="text-[17px] font-semibold tracking-[-0.02em]">{user.fullName}</h2>
+          <h2 class="text-[17px] font-semibold tracking-[-0.02em]">{fullName}</h2>
           <BadgeCheck size={15} class="text-[#2F6BFF]" strokeWidth={2.4} />
         </div>
-        <p class="mt-0.5 text-[11.5px] text-muted">{user.phone}</p>
+        <p class="mt-0.5 text-[11.5px] text-muted">{user?.phone || user?.id || '—'}</p>
         <p class="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-muted">
           <MapPin size={11} class="text-sos" />
-          {user.area} · Member since {user.memberSince}
+          {user?.area || '—'} · Member since {memberSince}
         </p>
       </div>
 
@@ -121,7 +140,7 @@
           <p class="mt-0.5 text-[9.5px] font-medium text-muted">Contacts</p>
         </div>
         <div class="text-center">
-          <p class="text-[16px] font-semibold tracking-tight text-safe">{user.trustScore}</p>
+          <p class="text-[16px] font-semibold tracking-tight text-safe">{trustScore}</p>
           <p class="mt-0.5 text-[9.5px] font-medium text-muted">Trust score</p>
         </div>
       </div>
@@ -208,6 +227,7 @@
 
   <button
     type="button"
+    onclick={onsignout}
     class="mt-5 flex w-full items-center justify-center gap-2 rounded-full bg-white py-3 text-[12px] font-semibold text-sos ring-1 ring-black/5 transition hover:bg-[#FFF5F4] active:scale-[0.99]"
   >
     <LogOut size={14} />

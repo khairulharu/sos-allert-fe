@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store'
-import { auth, getStoredUser, setStoredUser, setToken } from './api.js'
+import { auth, getStoredUser, getToken, setStoredUser, setToken } from './api.js'
 
 // Reactive session state shared across views.
 export const session = writable({
@@ -72,8 +72,11 @@ export async function logout() {
 
 export function restoreSession() {
   const user = getStoredUser()
-  if (user && (user.token || user.id)) {
-    const token = user.token || user.id
+  // The session token lives in its own localStorage key; the stored user
+  // object is profile data and has no token. Never fall back to user.id:
+  // that is not a session token and would make every authenticated call 401.
+  const token = getToken()
+  if (user && token) {
     setToken(token)
     session.set({ token, user, loading: false })
     return user

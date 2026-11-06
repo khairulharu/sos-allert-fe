@@ -9,8 +9,9 @@
   import AlertFlow from '$lib/components/AlertFlow.svelte'
   import AlertIncoming from '$lib/components/AlertIncoming.svelte'
   import AuthScreen from '$lib/components/AuthScreen.svelte'
-  import { session, restoreSession } from '$lib/stores.js'
-  import { location as locationApi } from '$lib/api.js'
+  import { session, restoreSession, logout } from '$lib/stores.js'
+  import { location as locationApi, sos as sosApi } from '$lib/api.js'
+  import { tracking, startTracking, stopTracking } from '$lib/tracking.js'
 
   let tab = $state('home')
   let sosOpen = $state(false)
@@ -30,6 +31,7 @@
       authed = true
       currentUser = restored
       startLocationHeartbeat()
+      syncActiveTracking()
     }
   })
 
@@ -38,6 +40,52 @@
     authed = !!s.token && !!s.user
     if (s.user) currentUser = s.user
   })
+
+  // ---- live SOS tracking (WebSocket) ----
+  let liveTrack = $state({ alertId: null, status: null, connection: 'idle' })
+  let trackedAlertId = null
+  let trackedStatus = null
+
+  const TERMINAL = new Set(['RESOLVED', 'CANCELLED', 'EXPIRED'])
+
+  tracking.subscribe((value) => {
+    const sameAlert = value.alertId && value.alertId === trackedAlertId
+    if (sameAlert && value.status && value.status !== trackedStatus && TERMINAL.has(value.status) && !sosOpen) {
+      notify(
+        value.status === 'RESOLVED'
+          ? 'Your SOS was resolved. Live tracking stopped.'
+          : value.status === 'CANCELLED'
+            ? 'Your SOS was cancelled. Live tracking stopped.'
+            : 'Your SOS expired. Live tracking stopped.',
+      )
+    }
+    if (value.alertId !== trackedAlertId) trackedStatus = null
+    if (value.status) trackedStatus = value.status
+    trackedAlertId = value.alertId
+    liveTrack = value
+  })
+
+  // Cold start / login: resume tracking for an active alert owned by this user.
+  async function syncActiveTracking() {
+    try {
+      const active = await sosApi.active()
+      const alert = Array.isArray(active) ? active[0] : null
+      if (!alert?.alert_id) return
+      const latest = alert.latest_location || alert.initial_location || {}
+      startTracking(alert.alert_id, {
+        status: alert.status,
+        latitude: latest.latitude,
+        longitude: latest.longitude,
+        updatedAt: latest.updated_at ?? alert.triggered_at ?? null,
+      })
+    } catch {
+      /* best-effort: nearby polling and the rest of the app keep working */
+    }
+  }
+
+  function handleTrack(alertId, seed) {
+    startTracking(alertId, seed)
+  }
 
   // ---- geolocation + heartbeat ----
   let heartbeatTimer
@@ -86,13 +134,20 @@
       authed = true
       currentUser = s
       startLocationHeartbeat()
+      syncActiveTracking()
     }
   }
 
   function onSignOut() {
+    stopTracking()
     authed = false
     currentUser = null
     tab = 'home'
+  }
+
+  async function onSessionExpired() {
+    stopTracking()
+    await logout()
   }
 </script>
 
@@ -127,6 +182,9 @@
                 onviewalert={() => (incomingOpen = true)}
                 ondismissincoming={() => (showIncoming = false)}
                 onsignout={onSignOut}
+                coords={lastCoord}
+                live={liveTrack}
+                onsessionexpired={onSessionExpired}
               />
             {:else if tab === 'alerts'}
               <AlertsView />
@@ -163,7 +221,13 @@
       {/if}
 
       {#if sosOpen}
-        <AlertFlow onclose={() => (sosOpen = false)} onnotify={notify} coords={lastCoord} />
+        <AlertFlow
+          onclose={() => (sosOpen = false)}
+          onnotify={notify}
+          ontrack={handleTrack}
+          live={liveTrack}
+          coords={lastCoord}
+        />
       {/if}
     </div>
   </div>

@@ -2,17 +2,36 @@
   import { fade, scale } from 'svelte/transition'
   import { X, Phone, MessageCircle, ShieldCheck, Check, MapPin, Radio, Loader2, AlertTriangle } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
+  import { sendBreadcrumb } from '$lib/tracking.js'
 
-  let { onclose, onnotify, coords = { lat: -8.65, lng: 115.22 } } = $props()
+  let {
+    onclose,
+    onnotify,
+    ontrack,
+    live = null,
+    coords = { lat: -8.65, lng: 115.22 },
+  } = $props()
 
   // ---- phases: 'describe' | 'count' | 'sending' | 'active' | 'ended' | 'error' ----
   let phase = $state('describe')
   let description = $state('')
   let countdown = $state(5)
   let elapsed = $state(0)
-  let ackCount = $state(0)
+  let acknowledged = $state(false)
   let confirming = $state(false)
   let errorMsg = $state('')
+
+  const liveStatus = $derived(live?.status || null)
+  const liveConnection = $derived(live?.connection || 'idle')
+  const connectionLabel = $derived(
+    liveConnection === 'open'
+      ? 'Live'
+      : liveConnection === 'reconnecting'
+        ? 'Reconnecting…'
+        : liveConnection === 'error'
+          ? 'Offline'
+          : 'Connecting…',
+  )
 
   // Real data from the backend response.
   let alertId = $state('')
@@ -63,6 +82,12 @@
     recipientsNotified = result.recipients_notified || 0
     triggeredAt = result.triggered_at ? new Date(result.triggered_at) : null
     triageResult = result.triage || null
+    ontrack?.(result.alert_id, {
+      status: result.status,
+      latitude: pos.lat,
+      longitude: pos.lng,
+      updatedAt: result.triggered_at,
+    })
     phase = 'active'
   }
 
@@ -126,6 +151,59 @@
     if (phase === 'active') {
       const id = setInterval(() => (elapsed += 1), 1000)
       return () => clearInterval(id)
+    }
+  })
+
+  // ---- WebSocket live tracking (sender) ----
+  let watchId = null
+  let lastBreadcrumb = null
+  let lastSentAt = 0
+
+  function emitBreadcrumb(force = false) {
+    if (!lastBreadcrumb) return
+    const now = Date.now()
+    if (!force && now - lastSentAt < 4000) return
+    lastSentAt = now
+    sendBreadcrumb(lastBreadcrumb)
+  }
+
+  $effect(() => {
+    if (phase !== 'active') return
+
+    lastBreadcrumb = { latitude: coords.lat, longitude: coords.lng }
+    emitBreadcrumb(true)
+
+    if (navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          lastBreadcrumb = {
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy_meters: pos.coords.accuracy,
+            speed_mps: Number.isFinite(pos.coords.speed) ? pos.coords.speed : undefined,
+            heading_deg: Number.isFinite(pos.coords.heading) ? pos.coords.heading : undefined,
+          }
+          emitBreadcrumb()
+        },
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
+      )
+    }
+
+    const timer = setInterval(() => emitBreadcrumb(true), 5000)
+
+    return () => {
+      clearInterval(timer)
+      if (watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(watchId)
+      watchId = null
+    }
+  })
+
+  $effect(() => {
+    if (phase !== 'active') return
+    if (liveStatus === 'ACKNOWLEDGED') acknowledged = true
+    if (liveStatus === 'RESOLVED' || liveStatus === 'CANCELLED' || liveStatus === 'EXPIRED') {
+      phase = 'ended'
     }
   })
 
@@ -327,7 +405,14 @@
               <Radio size={11} class="text-[#6EE7B7]" />
               AI Triage · on-device & cloud classification
             </span>
-            <span class="text-[9.5px] font-semibold text-[#6EE7B7]">Live</span>
+            <span
+              class="text-[9.5px] font-semibold {liveConnection === 'open'
+                ? 'text-[#6EE7B7]'
+                : liveConnection === 'error'
+                  ? 'text-[#FF8080]'
+                  : 'text-[#FFD580]'}"
+              >{connectionLabel}</span
+            >
           </div>
           <div class="p-3.5">
             <div class="flex items-center gap-2.5">
@@ -367,11 +452,27 @@
         <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">
           Responders notified · {recipientsNotified}
         </p>
-        <span class="flex items-center gap-1 text-[10px] font-medium text-[#6EE7B7]">
-          <span class="h-1.5 w-1.5 rounded-full bg-[#34D399] animate-live"></span>
-          {ackCount} on the way
+        <span
+          class="flex items-center gap-1 text-[10px] font-medium {acknowledged
+            ? 'text-[#6EE7B7]'
+            : 'text-white/50'}"
+        >
+          <span
+            class="h-1.5 w-1.5 rounded-full {acknowledged
+              ? 'bg-[#34D399] animate-live'
+              : 'bg-white/40'}"
+          ></span>
+          {acknowledged ? 'Responder on the way' : 'Waiting for responders'}
         </span>
       </div>
+
+      {#if liveConnection === 'reconnecting'}
+        <p class="mt-2 text-[9.5px] font-medium text-[#FFD580]">
+          Live connection lost — reconnecting…
+        </p>
+      {:else if liveConnection === 'error'}
+        <p class="mt-2 text-[9.5px] font-medium text-[#FF8080]">{live?.lastError || 'Live connection unavailable.'}</p>
+      {/if}
 
       <div class="mt-2.5 rounded-2xl bg-white/[0.05] px-4 py-3 ring-1 ring-white/[0.06]">
         <p class="text-[11px] leading-relaxed text-white/50">
@@ -492,7 +593,7 @@
             <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Duration</p>
           </div>
           <div class="flex-1 text-center">
-            <p class="text-[15px] font-semibold">{ackCount}</p>
+            <p class="text-[15px] font-semibold">{acknowledged ? 1 : 0}</p>
             <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Responded</p>
           </div>
           <div class="flex-1 text-center">

@@ -1,157 +1,228 @@
 <script>
+  import { onMount } from 'svelte'
   import { Crosshair, Layers, ChevronRight } from '@lucide/svelte'
+  import L from 'leaflet'
+  import 'leaflet/dist/leaflet.css'
 
   let {
     height = 'h-[228px]',
-    radiusLabel = 'Live · 1 km radius',
+    radiusLabel = null,
     showFooter = true,
     onopen,
     responders = [],
+    own = null,
+    live = null,
+    radiusM = 1000,
   } = $props()
 
-  const pins = [
-    { x: 148, y: 106, color: '#E7A93B', initials: 'SM' },
-    { x: 258, y: 130, color: '#6E8FE8', initials: 'DP' },
-    { x: 244, y: 182, color: '#43A98A', initials: 'AN' },
-    { x: 138, y: 174, color: '#D97798', initials: 'MP' },
-  ]
+  const FALLBACK_CENTER = [-6.2, 106.816]
+  const PIN_COLORS = ['#E7A93B', '#6E8FE8', '#43A98A', '#D97798']
+
+  let mapEl = $state(null)
+  let map = null
+  let markersLayer = null
+  let liveMarker = null
+  let centeredOnOwn = false
+  let showRadius = $state(true)
+
+  const center = $derived(
+    own && Number.isFinite(own.latitude) && Number.isFinite(own.longitude)
+      ? [own.latitude, own.longitude]
+      : FALLBACK_CENTER,
+  )
+
+  const label = $derived(
+    radiusLabel ||
+      `Live · ${radiusM >= 1000 ? `${radiusM / 1000} km` : `${radiusM} m`} radius`,
+  )
+
+  const closest = $derived(
+    responders.reduce(
+      (min, person) =>
+        Number.isFinite(person.distance_m) && (min == null || person.distance_m < min)
+          ? person.distance_m
+          : min,
+      null,
+    ),
+  )
+
+  function distanceLabel(m) {
+    if (!Number.isFinite(m)) return '—'
+    return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`
+  }
+
+  function youIcon() {
+    return L.divIcon({
+      className: 'sos-map-icon',
+      html: '<span class="sos-map-you"><span></span></span>',
+      iconSize: [26, 26],
+      iconAnchor: [13, 13],
+    })
+  }
+
+  function responderIcon(index) {
+    return L.divIcon({
+      className: 'sos-map-icon',
+      html: `<span class="sos-map-pin" style="--pin:${PIN_COLORS[index % PIN_COLORS.length]}"></span>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    })
+  }
+
+  function validCoords(latitude, longitude) {
+    return Number.isFinite(latitude) && Number.isFinite(longitude)
+  }
+
+  function liveIsActive() {
+    if (!live || !validCoords(live.latitude, live.longitude)) return false
+    return !['RESOLVED', 'CANCELLED', 'EXPIRED'].includes(live.status)
+  }
+
+  function liveIcon() {
+    return L.divIcon({
+      className: 'sos-map-icon',
+      html: '<span class="sos-map-live relative grid h-8 w-8 place-items-center"><span class="absolute inset-0 rounded-full bg-sos/25 animate-sos-pulse"></span><span class="h-3.5 w-3.5 rounded-full bg-sos shadow-sm ring-[2.5px] ring-white"></span></span>',
+      iconSize: [32, 32],
+      iconAnchor: [16, 16],
+    })
+  }
+
+  function syncLiveMarker() {
+    if (!map) return
+    if (!liveIsActive()) {
+      if (liveMarker) {
+        liveMarker.remove()
+        liveMarker = null
+      }
+      return
+    }
+    const position = [live.latitude, live.longitude]
+    if (liveMarker) {
+      liveMarker.setLatLng(position)
+      return
+    }
+    liveMarker = L.marker(position, {
+      icon: liveIcon(),
+      keyboard: false,
+      zIndexOffset: 1400,
+    })
+      .addTo(map)
+      .bindTooltip('Live SOS location', { direction: 'top', offset: [0, -16] })
+  }
+
+  function draw() {
+    if (!map) return
+
+    const [lat, lng] = center
+
+    // Follow the user's position once it arrives; afterwards the map stays
+    // where the user left it (recenter is explicit).
+    if (!centeredOnOwn && own) {
+      map.setView(center, 15)
+      centeredOnOwn = true
+    }
+
+    if (markersLayer) markersLayer.remove()
+    markersLayer = L.layerGroup().addTo(map)
+
+    if (showRadius) {
+      L.circle(center, {
+        radius: radiusM,
+        color: '#FF3B30',
+        weight: 1.5,
+        opacity: 0.35,
+        dashArray: '4 6',
+        fillColor: '#FF3B30',
+        fillOpacity: 0.05,
+        interactive: false,
+      }).addTo(markersLayer)
+    }
+
+    L.marker(center, { icon: youIcon(), keyboard: false, zIndexOffset: 1000 })
+      .addTo(markersLayer)
+      .bindTooltip('You', { direction: 'top', offset: [0, -12] })
+
+    responders.forEach((person, index) => {
+      if (!validCoords(person.latitude, person.longitude)) return
+      L.marker([person.latitude, person.longitude], {
+        icon: responderIcon(index),
+        keyboard: false,
+      })
+        .addTo(markersLayer)
+        .bindTooltip(`Responder · ${distanceLabel(person.distance_m)} away`, {
+          direction: 'top',
+          offset: [0, -8],
+        })
+    })
+  }
+
+  onMount(() => {
+    map = L.map(mapEl, {
+      zoomControl: false,
+      attributionControl: true,
+      scrollWheelZoom: false,
+    })
+    map.attributionControl.setPrefix('')
+    map.setView(center, 15)
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>',
+    }).addTo(map)
+
+    draw()
+    syncLiveMarker()
+
+    return () => {
+      liveMarker = null
+      map?.remove()
+      map = null
+      markersLayer = null
+    }
+  })
+
+  $effect(() => {
+    // Track reactive inputs and redraw markers whenever they change.
+    const _center = center
+    const _responders = responders
+    const _radius = radiusM
+    const _visible = showRadius
+    if (!map) return
+    draw()
+  })
+
+  $effect(() => {
+    const _liveLat = live?.latitude
+    const _liveLng = live?.longitude
+    const _liveStatus = live?.status
+    if (!map) return
+    syncLiveMarker()
+  })
+
+  function recenter() {
+    map?.setView(center, 15)
+    centeredOnOwn = true
+  }
+
+  function toggleRadius() {
+    showRadius = !showRadius
+  }
 </script>
 
-<div class="relative overflow-hidden rounded-[24px] bg-[#E9EDF0] {height}">
-  <svg
-    class="absolute inset-0 h-full w-full"
-    viewBox="0 0 400 300"
-    preserveAspectRatio="xMidYMid slice"
-    role="img"
-    aria-label="Map showing your location and responders within one kilometre"
-  >
-    <defs>
-      <filter id="pinShadow" x="-60%" y="-60%" width="220%" height="220%">
-        <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#0d0f13" flood-opacity="0.22" />
-      </filter>
-      <radialGradient id="mapGlow" cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.18" />
-        <stop offset="100%" stop-color="#3B82F6" stop-opacity="0" />
-      </radialGradient>
-    </defs>
-
-    <rect width="400" height="300" fill="#EAEEF1" />
-
-    <!-- water -->
-    <path d="M318 -12 C 344 34, 392 40, 414 86 L 414 -12 Z" fill="#D3E6F1" />
-    <!-- parks -->
-    <rect x="24" y="192" width="88" height="62" rx="12" fill="#D9EBD9" />
-    <rect x="252" y="38" width="58" height="34" rx="10" fill="#D9EBD9" />
-
-    <!-- city blocks -->
-    <g fill="#DFE4E8">
-      <rect x="12" y="14" width="40" height="48" rx="4" />
-      <rect x="60" y="12" width="52" height="50" rx="4" />
-      <rect x="120" y="16" width="34" height="44" rx="4" />
-      <rect x="162" y="12" width="38" height="48" rx="4" />
-      <rect x="208" y="14" width="50" height="46" rx="4" />
-      <rect x="266" y="12" width="30" height="14" rx="4" />
-      <rect x="12" y="96" width="46" height="36" rx="4" />
-      <rect x="66" y="94" width="40" height="40" rx="4" />
-      <rect x="130" y="92" width="54" height="44" rx="4" />
-      <rect x="192" y="96" width="34" height="36" rx="4" />
-      <rect x="234" y="98" width="44" height="34" rx="4" />
-      <rect x="286" y="92" width="52" height="44" rx="4" />
-      <rect x="344" y="96" width="44" height="38" rx="4" />
-      <rect x="14" y="158" width="34" height="22" rx="4" />
-      <rect x="122" y="160" width="46" height="26" rx="4" />
-      <rect x="176" y="158" width="52" height="30" rx="4" />
-      <rect x="236" y="156" width="40" height="28" rx="4" />
-      <rect x="284" y="158" width="50" height="26" rx="4" />
-      <rect x="342" y="160" width="46" height="22" rx="4" />
-      <rect x="122" y="214" width="40" height="46" rx="4" />
-      <rect x="170" y="212" width="52" height="50" rx="4" />
-      <rect x="230" y="214" width="42" height="46" rx="4" />
-      <rect x="280" y="212" width="48" height="50" rx="4" />
-      <rect x="336" y="214" width="52" height="46" rx="4" />
-      <rect x="14" y="262" width="46" height="30" rx="4" />
-      <rect x="68" y="264" width="38" height="28" rx="4" />
-      <rect x="120" y="268" width="52" height="26" rx="4" />
-      <rect x="182" y="266" width="38" height="28" rx="4" />
-      <rect x="230" y="268" width="54" height="26" rx="4" />
-      <rect x="292" y="268" width="40" height="26" rx="4" />
-      <rect x="340" y="264" width="48" height="30" rx="4" />
-    </g>
-
-    <!-- roads -->
-    <g stroke="#FBFCFD" stroke-width="13" stroke-linecap="round">
-      <path d="M-10 78 H410" />
-      <path d="M-10 146 H410" />
-      <path d="M-10 204 H410" />
-      <path d="M-10 260 H410" />
-      <path d="M58 -10 V310" />
-      <path d="M120 -10 V310" />
-      <path d="M196 -10 V310" />
-      <path d="M276 -10 V310" />
-      <path d="M336 -10 V310" />
-    </g>
-    <path
-      d="M-20 244 C 90 214, 190 188, 420 96"
-      fill="none"
-      stroke="#FDFDFE"
-      stroke-width="16"
-      stroke-linecap="round"
-    />
-    <path
-      d="M-20 244 C 90 214, 190 188, 420 96"
-      fill="none"
-      stroke="#F1C453"
-      stroke-width="1.4"
-      stroke-dasharray="8 9"
-      opacity="0.55"
-    />
-
-    <!-- street labels -->
-    <g fill="#98A2AD" font-size="6.5" font-weight="600" letter-spacing="0.2">
-      <text x="14" y="74" transform="rotate(-3 14 74)">JL. KEMANG RAYA</text>
-      <text x="16" y="142">JL. BANGKA II</text>
-      <text x="212" y="260">JL. KEMANG SELATAN</text>
-      <text x="60" y="34" transform="rotate(-90 60 34)">JL. AMPERA</text>
-    </g>
-
-    <!-- one kilometre radius -->
-    <circle cx="198" cy="152" r="104" fill="#FF3B30" opacity="0.05" />
-    <circle
-      cx="198"
-      cy="152"
-      r="104"
-      fill="none"
-      stroke="#FF3B30"
-      stroke-opacity="0.35"
-      stroke-width="1.5"
-      stroke-dasharray="4 6"
-    />
-    <circle cx="198" cy="152" r="46" fill="url(#mapGlow)" />
-
-    <!-- nearby responders -->
-    {#each pins as pin}
-      <g filter="url(#pinShadow)" class="animate-breathe">
-        <circle cx={pin.x} cy={pin.y} r="10.5" fill={pin.color} stroke="#fff" stroke-width="2.4" />
-        <text
-          x={pin.x}
-          y={pin.y + 2.6}
-          text-anchor="middle"
-          fill="#fff"
-          font-size="7"
-          font-weight="700"
-          font-family="Inter, sans-serif">{pin.initials}</text
-        >
-      </g>
-    {/each}
-
-    <!-- you -->
-    <circle cx="198" cy="152" r="20" fill="#2F6BFF" opacity="0.12" />
-    <circle cx="198" cy="152" r="10.5" fill="#fff" />
-    <circle cx="198" cy="152" r="7" fill="#2F6BFF" />
-  </svg>
+<div
+  class="map-shell relative overflow-hidden rounded-[24px] bg-[#E9EDF0] {height} {showFooter
+    ? 'with-footer'
+    : ''}"
+>
+  <div
+    bind:this={mapEl}
+    class="absolute inset-0 z-0 h-full w-full"
+    role="region"
+    aria-label="Map of nearby responders"
+  ></div>
 
   <!-- map controls -->
-  <div class="absolute inset-x-0 top-0 flex items-start justify-between p-3">
+  <div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
     <span
       class="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-ink shadow-sm ring-1 ring-black/5 backdrop-blur-md"
     >
@@ -159,20 +230,25 @@
         <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-sos opacity-70"></span>
         <span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-sos"></span>
       </span>
-      {radiusLabel}
+      {label}
     </span>
-    <div class="flex gap-1.5">
+    <div class="pointer-events-auto flex gap-1.5">
       <button
         type="button"
-        aria-label="Recenter map"
+        aria-label="Recenter map on my location"
+        onclick={recenter}
         class="grid h-8 w-8 place-items-center rounded-full bg-white/90 text-ink/70 shadow-sm ring-1 ring-black/5 backdrop-blur-md transition hover:text-ink active:scale-95"
       >
         <Crosshair size={15} strokeWidth={2.2} />
       </button>
       <button
         type="button"
-        aria-label="Map layers"
-        class="grid h-8 w-8 place-items-center rounded-full bg-white/90 text-ink/70 shadow-sm ring-1 ring-black/5 backdrop-blur-md transition hover:text-ink active:scale-95"
+        aria-label="Toggle radius circle"
+        aria-pressed={showRadius}
+        onclick={toggleRadius}
+        class="grid h-8 w-8 place-items-center rounded-full shadow-sm ring-1 ring-black/5 backdrop-blur-md transition active:scale-95 {showRadius
+          ? 'bg-white/90 text-ink/70 hover:text-ink'
+          : 'bg-ink text-white'}"
       >
         <Layers size={15} strokeWidth={2.2} />
       </button>
@@ -186,10 +262,11 @@
       class="absolute inset-x-2.5 bottom-2.5 flex items-center gap-3 rounded-[18px] bg-white/92 p-3 text-left shadow-[0_8px_24px_-12px_rgba(16,24,40,0.35)] ring-1 ring-black/5 backdrop-blur-xl transition active:scale-[0.99]"
     >
       <div class="flex -space-x-2">
-        {#each responders.slice(0, 4) as person}
+        {#each responders.slice(0, 4) as person, i}
           <span
-            class="grid h-7 w-7 place-items-center rounded-full text-[9px] font-bold ring-2 ring-white {person.tone}"
-            >{person.initials}</span
+            class="grid h-7 w-7 place-items-center rounded-full text-[9px] font-bold text-white ring-2 ring-white"
+            style="background:{PIN_COLORS[i % PIN_COLORS.length]}"
+            >•</span
           >
         {/each}
         {#if responders.length === 0}
@@ -201,8 +278,12 @@
       </div>
       <div class="min-w-0 flex-1">
         {#if responders.length > 0}
-          <p class="text-[12.5px] font-semibold leading-tight text-ink">{responders.length} responders nearby</p>
-          <p class="text-[11px] leading-tight text-muted">Closest is 180 m away</p>
+          <p class="text-[12.5px] font-semibold leading-tight text-ink">
+            {responders.length} responder{responders.length === 1 ? '' : 's'} nearby
+          </p>
+          <p class="text-[11px] leading-tight text-muted">
+            Closest is {distanceLabel(closest)} away · positions approximate
+          </p>
         {:else}
           <p class="text-[12.5px] font-semibold leading-tight text-ink">No responders nearby</p>
           <p class="text-[11px] leading-tight text-muted">Coverage updates in real time</p>
@@ -212,3 +293,55 @@
     </button>
   {/if}
 </div>
+
+<style>
+  :global(.sos-map-icon) {
+    background: transparent;
+    border: 0;
+  }
+
+  :global(.sos-map-you) {
+    display: grid;
+    width: 26px;
+    height: 26px;
+    place-items: center;
+    border-radius: 9999px;
+    background: rgba(47, 107, 255, 0.16);
+  }
+
+  :global(.sos-map-you > span) {
+    width: 13px;
+    height: 13px;
+    border-radius: 9999px;
+    background: #2f6bff;
+    border: 2.5px solid #fff;
+    box-shadow: 0 1px 4px rgba(13, 15, 19, 0.35);
+  }
+
+  :global(.sos-map-pin) {
+    display: block;
+    width: 16px;
+    height: 16px;
+    border-radius: 9999px;
+    background: var(--pin, #e7a93b);
+    border: 2.5px solid #fff;
+    box-shadow: 0 1px 4px rgba(13, 15, 19, 0.3);
+  }
+
+  :global(.map-shell .leaflet-container) {
+    background: #e9edf0;
+    font: inherit;
+  }
+
+  :global(.map-shell .leaflet-control-attribution) {
+    font-size: 9px;
+    line-height: 1.4;
+    padding: 0 4px;
+    background: rgba(255, 255, 255, 0.8);
+    color: #7b818c;
+  }
+
+  :global(.map-shell.with-footer .leaflet-bottom.leaflet-right) {
+    bottom: 68px;
+  }
+</style>

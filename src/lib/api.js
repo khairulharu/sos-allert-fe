@@ -88,6 +88,9 @@ export const auth = {
 // ---- Location heartbeat ----
 export const location = {
   update: (latitude, longitude) => request('PUT', '/api/location', { latitude, longitude }),
+  get: () => request('GET', '/api/location'),
+  nearby: (radiusM = 1000) =>
+    request('GET', `/api/location/nearby?radius_m=${encodeURIComponent(radiusM)}`),
 }
 
 // ---- SOS ----

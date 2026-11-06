@@ -9,16 +9,25 @@
     Phone,
     Send,
     Users,
-    BadgeCheck,
     ArrowUpRight,
     Radio,
     X,
     Siren,
   } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
-  import { contacts } from '$lib/api.js'
+  import { contacts, location as locationApi } from '$lib/api.js'
 
-  let { user, onnavigate, onviewalert, showIncoming = true, ondismissincoming, onnotify } = $props()
+  let {
+    user,
+    onnavigate,
+    onviewalert,
+    showIncoming = true,
+    ondismissincoming,
+    onnotify,
+    live = null,
+    coords = { lat: -8.65, lng: 115.22 },
+    onsessionexpired,
+  } = $props()
 
   const name = $derived(user?.name || user?.fullName || 'there')
   const initials = $derived(
@@ -44,8 +53,137 @@
     }
   })
 
-  const responders = $state([])
+  // ---- live responder map ----
+  const POLL_MS = 15000
+  const NEARBY_RADIUS_M = 1000
+  const RESPONDER_TONES = [
+    'bg-[#F2C879] text-[#6b4a10]',
+    'bg-[#9DB8F5] text-[#1e3a8a]',
+    'bg-[#A7DCC7] text-[#065f46]',
+    'bg-[#F3B3C6] text-[#831843]',
+  ]
+
+  let responders = $state([])
   const alertHistory = $state([])
+  let own = $state(null)
+  let nearbyRadius = $state(NEARBY_RADIUS_M)
+  let nearbyError = $state('')
+  let nearbyLoading = $state(true)
+  let refreshing = false
+  let ownSynced = false
+  let pollTimer
+
+  const responderView = $derived(
+    responders.map((person, i) => ({
+      ...person,
+      initials: 'R',
+      tone: RESPONDER_TONES[i % RESPONDER_TONES.length],
+      distance: distanceLabel(person.distance_m),
+      seen: timeAgo(person.last_seen),
+    })),
+  )
+
+  function distanceLabel(m) {
+    if (!Number.isFinite(m)) return '—'
+    return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`
+  }
+
+  function timeAgo(ts) {
+    const value = Number(ts)
+    if (!Number.isFinite(value)) return 'just now'
+    const seconds = Math.max(0, Math.round((Date.now() - value) / 1000))
+    if (seconds < 60) return 'just now'
+    return `${Math.round(seconds / 60)} min ago`
+  }
+
+  function browserPosition() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null)
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 6000, maximumAge: 30000 },
+      )
+    })
+  }
+
+  function normalizeCoords(value) {
+    const lat = Number(value?.lat ?? value?.latitude)
+    const lng = Number(value?.lng ?? value?.longitude)
+    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null
+  }
+
+  async function readOwnLocation() {
+    try {
+      return await locationApi.get()
+    } catch (err) {
+      if (err.status === 401) throw err
+      if (err.status !== 404) throw err
+      return null
+    }
+  }
+
+  async function ensureOwnLocation() {
+    // Sync an accurate browser position once, then read the stored heartbeat.
+    if (!ownSynced) {
+      ownSynced = true
+      const pos = await browserPosition()
+      if (pos) {
+        try {
+          await locationApi.update(pos.lat, pos.lng)
+        } catch (err) {
+          if (err.status === 401) throw err
+        }
+      }
+    }
+
+    const stored = await readOwnLocation()
+    if (stored) return stored
+
+    // No heartbeat yet: PUT the app's last known coordinates, then retry.
+    const fallback = normalizeCoords(coords)
+    if (!fallback) return null
+    await locationApi.update(fallback.lat, fallback.lng)
+    return await readOwnLocation()
+  }
+
+  async function refreshNearby() {
+    if (refreshing) return
+    refreshing = true
+    try {
+      const stored = await ensureOwnLocation()
+      if (stored) own = stored
+
+      if (!stored) {
+        responders = []
+        nearbyError = 'Waiting for a location heartbeat…'
+        return
+      }
+
+      const data = await locationApi.nearby(NEARBY_RADIUS_M)
+      responders = Array.isArray(data?.responders) ? data.responders : []
+      nearbyRadius = Number(data?.radius_m) || NEARBY_RADIUS_M
+      nearbyError = ''
+    } catch (err) {
+      if (err.status === 401) {
+        clearInterval(pollTimer)
+        onsessionexpired?.()
+        return
+      }
+      nearbyError = err?.message || 'Could not load nearby responders.'
+    } finally {
+      refreshing = false
+      nearbyLoading = false
+    }
+  }
+
+  onMount(() => {
+    refreshNearby()
+    pollTimer = setInterval(() => {
+      if (!document.hidden) refreshNearby()
+    }, POLL_MS)
+    return () => clearInterval(pollTimer)
+  })
 
   const now = new Date()
   const hour = now.getHours()
@@ -156,8 +294,8 @@
     <div class="relative mt-4 flex items-center justify-between border-t border-white/10 pt-3.5">
       <div class="flex items-center gap-2">
         <div class="flex -space-x-2">
-          {#if responders.length > 0}
-            {#each responders.slice(0, 3) as person}
+          {#if responderView.length > 0}
+            {#each responderView.slice(0, 3) as person}
               <span
                 class="grid h-6 w-6 place-items-center rounded-full text-[8px] font-bold ring-2 ring-[#101216] {person.tone}"
                 >{person.initials}</span
@@ -170,10 +308,12 @@
             >
           {/if}
         </div>
-        {#if responders.length > 0}
-          <span class="text-[11px] font-medium text-white/60">+{Math.max(responders.length - 3, 1)} nearby</span>
+        {#if responderView.length > 0}
+          <span class="text-[11px] font-medium text-white/60">{responders.length} nearby</span>
         {:else}
-          <span class="text-[11px] font-medium text-white/60">No responders online</span>
+          <span class="text-[11px] font-medium text-white/60"
+            >{nearbyLoading ? 'Locating responders…' : 'No responders online'}</span
+          >
         {/if}
       </div>
       <button
@@ -232,7 +372,13 @@
     </div>
 
     <div class="mt-3">
-      <MapCard onopen={() => onnavigate?.('contacts')} />
+      <MapCard
+        onopen={() => onnavigate?.('contacts')}
+        responders={responders}
+        own={own}
+        live={live}
+        radiusM={nearbyRadius}
+      />
     </div>
   </section>
 
@@ -261,7 +407,7 @@
     <div class="flex items-end justify-between px-0.5">
       <div>
         <h2 class="text-[15px] font-semibold tracking-[-0.01em]">Nearby responders</h2>
-        <p class="mt-0.5 text-[11px] text-muted">Able to reach you in minutes</p>
+        <p class="mt-0.5 text-[11px] text-muted">Approximate positions · no personal details</p>
       </div>
       <button
         type="button"
@@ -271,12 +417,9 @@
     </div>
 
     <div class="card mt-3 divide-y divide-line/80 overflow-hidden">
-      {#if responders.length > 0}
-        {#each responders.slice(0, 3) as person}
-          <button
-            type="button"
-            class="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-[#FAFBFC]"
-          >
+      {#if responderView.length > 0}
+        {#each responderView.slice(0, 3) as person}
+          <div class="flex w-full items-center gap-3 px-4 py-3 text-left">
             <span class="relative">
               <span class="grid h-10 w-10 place-items-center rounded-full text-[12px] font-bold {person.tone}"
                 >{person.initials}</span
@@ -286,25 +429,25 @@
               ></span>
             </span>
             <span class="min-w-0 flex-1">
-              <span class="flex items-center gap-1">
-                <span class="truncate text-[13px] font-semibold text-ink">{person.name}</span>
-                {#if person.verified}
-                  <BadgeCheck size={13} class="shrink-0 text-[#2F6BFF]" strokeWidth={2.3} />
-                {/if}
-              </span>
-              <span class="mt-0.5 block text-[11px] text-muted">{person.role} · {person.distance}</span>
+              <span class="block truncate text-[13px] font-semibold text-ink">Responder</span>
+              <span class="mt-0.5 block text-[11px] text-muted"
+                >{person.distance} away · active {person.seen}</span
+              >
             </span>
-            <span
-              class="grid h-8 w-8 place-items-center rounded-full bg-[#F5F6F8] text-ink/60 transition hover:bg-ink hover:text-white"
+            <span class="rounded-full bg-[#F5F6F8] px-2 py-1 text-[9.5px] font-semibold text-ink/55"
+              >Live</span
             >
-              <ChevronRight size={15} />
-            </span>
-          </button>
+          </div>
         {/each}
+      {:else if nearbyLoading}
+        <div class="px-4 py-8 text-center">
+          <p class="text-[12.5px] font-semibold text-ink">Locating responders…</p>
+          <p class="mt-1 text-[11px] text-muted">Using your latest heartbeat.</p>
+        </div>
       {:else}
         <div class="px-4 py-8 text-center">
           <p class="text-[12.5px] font-semibold text-ink">No responders nearby</p>
-          <p class="mt-1 text-[11px] text-muted">Coverage updates in real time.</p>
+          <p class="mt-1 text-[11px] text-muted">{nearbyError || 'Coverage updates in real time.'}</p>
         </div>
       {/if}
     </div>

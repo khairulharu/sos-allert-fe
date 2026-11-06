@@ -39,6 +39,17 @@ cp .env.example .env
 # VITE_WS_URL=wss://api.allert.my.id
 ```
 
+`npm run build` reads `.env.production`, which already points at
+`https://api.allert.my.id` / `wss://api.allert.my.id`. Real environment
+variables override those defaults in CI. Deploy the generated `dist/` directory
+as static files; `dist/` is gitignored, so run the build on the deploy host or
+in CI:
+
+```bash
+npm ci
+npm run build   # artifact: dist/
+```
+
 ## Already implemented (live, wired to the Go backend)
 
 | Area | What works |

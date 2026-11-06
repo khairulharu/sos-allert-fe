@@ -2,7 +2,8 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `cf328eb` (location APIs + full API contract).
+Backend state at handoff: commit `1ce1acb` (location APIs, auth rate limit, audio STT).
+The mirrored API contract is at frontend commit `6cd9ea0`.
 
 ## Run
 
@@ -23,10 +24,10 @@ cd ../backend && go run cmd/web/main.go
 
 - Full spec: `api/api-spec.json`
 - Human summary: `api/api.md`
-- Both files are mirrored from `../backend/api/` at backend commit `cf328eb`.
-  The backend copy remains the source of truth; re-copy after backend API
-  changes. The frontend copy exists so a session opened in this repo has the
-  contract without leaving the workspace.
+- Both files are mirrored from `../backend/api/` at backend commit `1ce1acb`
+  (frontend commit `6cd9ea0`). The backend copy remains the source of truth;
+  re-copy after backend API changes. The frontend copy exists so a session
+  opened in this repo has the contract without leaving the workspace.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.
@@ -48,8 +49,12 @@ cd ../backend && go run cmd/web/main.go
   `ALERT_STATUS`), HTTP 429 handling (auth cooldown/countdown, SOS limit
   screen), real incoming responder alerts (`GET /api/sos/inbox` polled every
   12 s, real sheet/banner, `POST /respond`, then responder WS stream),
-  10 s audio evidence via `MediaRecorder` + multipart upload.
+  10 s audio evidence via `MediaRecorder` + multipart upload. The backend now
+  transcribes audio (≤ 25 MB) and returns `transcript`, `transcription_status`,
+  and updated `triage`; the UI does not display those fields yet.
 - Not wired yet:
+  - handling the new `ALERT_TRIAGE` WebSocket frame and showing the updated
+    classification/transcript in the active alert and responder sheet;
   - video capture and in-app playback/download of media;
   - native push (FCM/APNs) — inbox polling is the browser fallback.
 
@@ -70,6 +75,8 @@ cd ../backend && go run cmd/web/main.go
   Sender: `tracking`, `startTracking(alertId, seed)`, `stopTracking()`,
   `sendBreadcrumb(fields)`. Responder (read-only): `responderTracking`,
   `startResponderTracking(alertId, seed)`, `stopResponderTracking()`.
+  **Pending:** handle the new `ALERT_TRIAGE` frame (emergency_type, severity,
+  summary) published after audio transcription.
 - `src/lib/alertMeta.js` — `emergencyLabel`, `initialsFor`, `timeAgo`,
   `formatDistance`, `formatEta`, and `distanceMeters` (haversine) shared by the
   incoming sheet and Home banner.
@@ -107,7 +114,9 @@ cd ../backend && go run cmd/web/main.go
   `ALERT_STATUS`. Active view also owns audio evidence: `getUserMedia` +
   `MediaRecorder`, 10 s auto-stop, explicit stop, mime fallback
   (webm/opus → webm → mp4 → ogg), multipart upload, and cleanup on unmount or
-  terminal status.
+  terminal status. The upload response now includes `transcript`,
+  `transcription_status`, and `triage`; surface them in the active view when
+  the STT backend is enabled.
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
 - `src/lib/components/ProfileView.svelte` — profile + settings toggles.
@@ -178,6 +187,45 @@ Remaining map work: backend name lookup (privacy decision) for friendly labels,
 a fullscreen/responder-detail view, and responder-side WS tracking once the
 incoming-alert sheet is real.
 
+## Audio STT contract (backend, implemented)
+
+The backend transcribes uploaded audio with a Groq/OpenAI-compatible
+Whisper endpoint (default Groq `whisper-large-v3-turbo`, language `id`).
+
+- API key location: `../backend/config.json` → `ai.stt.api_key`
+  (`gsk_...`). It is **backend-only**; never put it in `.env`, localStorage,
+  or any frontend code. Set `ai.stt.enabled: true` too.
+- Frontend already uploads one assembled `Blob` as multipart field `file` to
+  `POST /api/sos/:alertId/media`; the 20 `MediaRecorder` chunks are client-side
+  only and must stay assembled into one file.
+- Audio ≤ 25 MB is transcribed. Larger audio is stored with
+  `transcription_status: "too_large"` and is not sent to the provider.
+- Upload response (`data`) now includes:
+  - `transcript` — speech-to-text result (omitted when empty);
+  - `transcription_status` — `disabled | too_large | completed | empty | failed`;
+  - `transcribed_at` — epoch ms;
+  - `triage` — `{ emergency_type, severity, summary }` when the transcript
+    changed the alert classification.
+- STT/triage failures are fail-open: upload still returns `200`, media is
+  stored, and the alert keeps its previous classification.
+- The backend updates `alerts.emergency_type/severity/summary` and broadcasts
+  on the tracking WebSocket:
+
+```json
+{
+  "type": "ALERT_TRIAGE",
+  "alert_id": "alt_...",
+  "emergency_type": "MEDICAL",
+  "severity": 0.8,
+  "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
+  "updated_at": 1730304075000
+}
+```
+
+`src/lib/tracking.js` does not handle `ALERT_TRIAGE` yet — add it to the
+message switch and surface the new classification in the active alert and
+responder sheet.
+
 ## Live tracking protocol notes
 
 - WS URL: `ws(s)://<ws-base>/ws/sos/:alertId/track?token=<raw token>`; no
@@ -187,8 +235,9 @@ incoming-alert sheet is real.
   `GET /api/sos/active` (App does this once, no polling), then apply frames.
 - Only the sender sends breadcrumb JSON. Responders are subscribe-only; their
   sends are rejected by the backend and echoed as `{error}`.
-- Frames: `{type:"LOCATION_UPDATE",latitude,longitude,speed_mps?,heading_deg?}`
-  and `{type:"ALERT_STATUS",status,updated_at}`.
+- Frames: `{type:"LOCATION_UPDATE",latitude,longitude,speed_mps?,heading_deg?}`,
+  `{type:"ALERT_STATUS",status,updated_at}`, and
+  `{type:"ALERT_TRIAGE",emergency_type,severity,summary,updated_at}`.
 - `RESOLVED`, `CANCELLED`, and `EXPIRED` are terminal: stop reconnecting and
   remove the live pin. `EXPIRED` is not currently broadcast by the backend
   scheduler, so treat a closed socket as reconnectable until status arrives.
@@ -197,12 +246,12 @@ incoming-alert sheet is real.
 
 ## Backend notes / known gaps
 
-- Dev DB migrations are at `20261107000000_locations_user_unique`; other
+- Dev DB migrations are at `20261108000000_alert_media_transcription`; other
   environments need `migrate up` (see `../backend/README.md`).
 - Nearby respond coords are masked; do not expect exact positions.
 - FCM/APNs/Twilio credentials are not configured, so push is log-only.
-- Pending backend items: push credentials, media frontend wiring, Redis GEO
-  TTL/cleanup, and optional user names in nearby results.
+- Pending backend items: push credentials, Redis GEO TTL/cleanup, and broader
+  re-fanout when post-trigger audio raises severity. Audio STT itself is wired.
 - Incoming-alert semantics: `GET /api/sos/inbox` is the browser substitute for
   push (FCM/APNs is log-only). WS tracking is per-alert and only authorizes the
   sender or a recorded responder, so the app polls the inbox first and connects

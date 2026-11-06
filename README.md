@@ -1,5 +1,8 @@
 # SOS Alert — Frontend
 
+> Agent/context handoff notes (backend contract, current state, next tasks):
+> [`AGENTS.md`](./AGENTS.md).
+
 A mobile-first UI/UX concept for a community SOS app. Built with **Svelte 5** and
 **Tailwind CSS v4**, no UI kit — every screen and icon layout is custom.
 

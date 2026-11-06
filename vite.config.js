@@ -10,5 +10,9 @@ export default defineConfig({
       $lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
     },
   },
-  server: { port: 5173, host: true },
+  server: {
+    port: 5173,
+    host: true,
+    allowedHosts: ['allert.my.id', '.instabox.tech'],
+  },
 })

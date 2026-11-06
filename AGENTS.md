@@ -45,7 +45,8 @@ cd ../backend && go run cmd/web/main.go
   (own heartbeat + `GET /api/location/nearby` polled every 15 s; masked pins
   and generic "Responder" rows, no names), sender-side WebSocket live tracking
   (`/ws/sos/:alertId/track?token=`; breadcrumbs every 5 s, live pin,
-  `ALERT_STATUS`).
+  `ALERT_STATUS`), HTTP 429 handling (auth cooldown/countdown, SOS limit
+  screen).
 - Not wired yet:
   - media upload/download;
   - native push (FCM/APNs);
@@ -55,7 +56,11 @@ cd ../backend && go run cmd/web/main.go
 
 ## Important files
 
-- `src/lib/api.js` — fetch wrapper, raw token, API base URL.
+- `src/lib/api.js` — fetch wrapper, raw token, API base URL. Error objects carry
+  `status`, `payload`, and `retryAfter` (parsed from `Retry-After` seconds or
+  HTTP date).
+- `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
+  by the auth and SOS 429 UIs.
 - `src/lib/tracking.js` — WebSocket live-tracking store. Builds the WS URL
   (`VITE_WS_URL` or `ws(s)://` derived from `VITE_API_URL`), sends the raw token
   as `?token=`, reconnects with exponential backoff, queues breadcrumbs while
@@ -181,6 +186,12 @@ incoming-alert sheet is real.
 - Pending backend items: push credentials, media frontend wiring, responder
   incoming-alert WS UI, Redis GEO TTL/cleanup, and optional user names in
   nearby results.
+- Rate-limit gap: CORS currently exposes only `Content-Disposition`, so
+  cross-origin JS cannot read `Retry-After`. The auth UI falls back to the
+  documented 15-minute lockout; adding `Retry-After` to `ExposeHeaders` makes
+  the exact countdown work (tested with the header exposed). SOS 429s have no
+  `Retry-After` at all, so the UI shows the backend message and hides "Try
+  again".
 - `backend/config.json` and `ca.pem` are gitignored; never commit them here.
 
 ## Verification

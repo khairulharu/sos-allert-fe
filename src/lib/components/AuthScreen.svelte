@@ -1,8 +1,14 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { Siren, MapPin, ShieldCheck, Loader2, Eye, EyeOff } from '@lucide/svelte'
   import { login, register } from '$lib/stores.js'
+  import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
 
   let { onsuccess } = $props()
+
+  // Auth lockout is 15 minutes; used only when the browser cannot read
+  // Retry-After (cross-origin CORS currently exposes just Content-Disposition).
+  const AUTH_FALLBACK_LOCKOUT = 15 * 60
 
   let mode = $state('login') // 'login' | 'signup'
   let id = $state('')
@@ -12,6 +18,24 @@
   let error = $state('')
   let busy = $state(false)
   let hint = $state('')
+  let cooldown = $state(0)
+  let cooldownTimer = null
+
+  function startCooldown(seconds) {
+    clearInterval(cooldownTimer)
+    cooldown = Math.max(1, Math.ceil(seconds))
+    cooldownTimer = setInterval(() => {
+      cooldown -= 1
+      if (cooldown <= 0) {
+        cooldown = 0
+        clearInterval(cooldownTimer)
+        cooldownTimer = null
+        if (error.startsWith('Too many attempts')) error = ''
+      }
+    }, 1000)
+  }
+
+  onDestroy(() => clearInterval(cooldownTimer))
 
   function suggestId() {
     if (id) return
@@ -22,6 +46,10 @@
   async function submit() {
     error = ''
     hint = ''
+    if (cooldown > 0) {
+      error = `Too many attempts. Try again in ${formatCooldown(cooldown)}.`
+      return
+    }
     if (!id.trim() || password.length < 4) {
       error = 'Enter a user ID and a password of at least 4 characters.'
       return
@@ -40,7 +68,13 @@
       }
       onsuccess?.()
     } catch (err) {
-      error = err?.message || 'Something went wrong. Check the backend is running.'
+      if (err?.status === 429) {
+        const wait = retrySeconds(err) ?? AUTH_FALLBACK_LOCKOUT
+        startCooldown(wait)
+        error = `Too many attempts. Try again in ${formatCooldown(wait)}.`
+      } else {
+        error = err?.message || 'Something went wrong. Check the backend is running.'
+      }
     } finally {
       busy = false
     }
@@ -140,8 +174,16 @@
         </label>
 
         {#if error}
-          <p class="rounded-2xl bg-[#FFECEB] px-3.5 py-2.5 text-[11.5px] font-medium text-[#b3241d]">
+          <p
+            role="alert"
+            class="rounded-2xl bg-[#FFECEB] px-3.5 py-2.5 text-[11.5px] font-medium text-[#b3241d]"
+          >
             {error}
+            {#if cooldown > 0}
+              <span class="mt-1 block text-[10px] font-normal text-[#b3241d]/80">
+                Sign in and registration share the same limit.
+              </span>
+            {/if}
           </p>
         {/if}
         {#if hint}
@@ -152,11 +194,15 @@
 
         <button
           type="submit"
-          disabled={busy}
-          class="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-3.5 text-[13px] font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
+          disabled={busy || cooldown > 0}
+          class="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-3.5 text-[13px] font-semibold text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {#if busy}<Loader2 size={15} class="animate-spin" />{/if}
-          {mode === 'login' ? 'Sign in' : 'Create account'}
+          {#if cooldown > 0}
+            Try again in {formatCooldown(cooldown)}
+          {:else}
+            {mode === 'login' ? 'Sign in' : 'Create account'}
+          {/if}
         </button>
       </form>
     </div>

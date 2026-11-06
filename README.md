@@ -55,6 +55,7 @@ npm run build   # artifact: dist/
 | Area | What works |
 | --- | --- |
 | **Auth** | Sign in / create account against `POST /api/users` + `/api/users/_login`; session token kept in `localStorage`; sign out. Raw token sent in the `Authorization` header (matches backend). |
+| **Rate limits** | Auth `429` (5/min/IP + 15 min lockout): countdown from `Retry-After` when readable, otherwise a 15-minute fallback; submit disabled. SOS `429` (3 triggers/hour/user): dedicated "SOS limit reached" screen, no retry loop, call-112 prompt. |
 | **Location heartbeat** | `PUT /api/location` sent at startup (browser geolocation) and every 60 s, so you appear as a nearby responder. |
 | **Responder map** | Leaflet + OpenStreetMap (no API token). Centers on your heartbeat, draws the 1 km radius, masked responder pins and a live list from `GET /api/location/nearby`; polls every 15 s. Backend returns only `user_id` + ~100 m-rounded coordinates, so the UI shows generic "Responder" rows and pins. |
 | **Live tracking (WebSocket)** | The sender's active alert connects to `WS /ws/sos/:alertId/track?token=<raw token>`, sends a breadcrumb every 5 s (throttled), and applies `LOCATION_UPDATE` / `ALERT_STATUS` frames. The live pin moves on the Home map; acknowledge/resolve/cancel/expire update the active UI. Reconnects with backoff, and cold start resumes the own active alert via `GET /api/sos/active`. |
@@ -90,6 +91,7 @@ src/
 └── lib/
     ├── api.js                  # fetch client for the Go backend (raw-token auth)
     ├── tracking.js             # WS live tracking store (connect/reconnect/breadcrumbs)
+    ├── rateLimit.js            # 429 Retry-After parsing + countdown formatting
     ├── stores.js               # Svelte session store (login/register/logout/restore)
     ├── data.js                 # leftover demo fallback (ProfileView only)
     └── components/

@@ -3,6 +3,7 @@
   import { X, Phone, MessageCircle, ShieldCheck, Check, MapPin, Radio, Loader2, AlertTriangle } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
+  import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
 
   let {
     onclose,
@@ -20,6 +21,7 @@
   let acknowledged = $state(false)
   let confirming = $state(false)
   let errorMsg = $state('')
+  let rateLimited = $state(false)
 
   const liveStatus = $derived(live?.status || null)
   const liveConnection = $derived(live?.connection || 'idle')
@@ -73,7 +75,15 @@
         description: description.trim(),
       })
     } catch (err) {
-      errorMsg = err?.message || 'Failed to send SOS. Check connection.'
+      if (err?.status === 429) {
+        rateLimited = true
+        const wait = retrySeconds(err)
+        errorMsg = wait
+          ? `SOS limit reached. Try again in ${formatCooldown(wait)}.`
+          : err?.message || 'SOS limit reached: max 3 triggers per hour.'
+      } else {
+        errorMsg = err?.message || 'Failed to send SOS. Check connection.'
+      }
       phase = 'error'
       return
     }
@@ -127,6 +137,8 @@
 
   function startCountdown() {
     if (!description.trim()) { description = 'Emergency'; }
+    rateLimited = false
+    errorMsg = ''
     phase = 'count'
     countdown = total
     setTimeout(() => (phase = 'sending'), 50)
@@ -541,26 +553,35 @@
         <span class="grid h-20 w-20 place-items-center rounded-full bg-sos/15 ring-1 ring-sos/25">
           <AlertTriangle size={34} class="text-[#FF8080]" strokeWidth={2} />
         </span>
-        <h2 class="mt-6 text-[24px] font-semibold tracking-[-0.03em]">SOS could not be sent</h2>
+        <h2 class="mt-6 text-[24px] font-semibold tracking-[-0.03em]">
+          {rateLimited ? 'SOS limit reached' : 'SOS could not be sent'}
+        </h2>
         <p class="mt-2 max-w-[270px] text-[12.5px] leading-relaxed text-white/55">
-          {errorMsg || 'The alert did not go through. Please try again.'}
+          {errorMsg ||
+            (rateLimited
+              ? 'SOS limit reached: max 3 triggers per hour.'
+              : 'The alert did not go through. Please try again.')}
         </p>
         <p class="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[10.5px] text-white/50 ring-1 ring-white/10">
           <Phone size={11} /> In immediate danger, call 112.
         </p>
       </div>
       <div class="space-y-2.5">
-        <button
-          type="button"
-          onclick={() => { phase = 'describe'; errorMsg = '' }}
-          class="w-full rounded-full bg-white py-3.5 text-[13.5px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]"
-        >
-          Try again
-        </button>
+        {#if !rateLimited}
+          <button
+            type="button"
+            onclick={() => { phase = 'describe'; errorMsg = '' }}
+            class="w-full rounded-full bg-white py-3.5 text-[13.5px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]"
+          >
+            Try again
+          </button>
+        {/if}
         <button
           type="button"
           onclick={stop}
-          class="w-full rounded-full bg-white/[0.06] py-3 text-[12.5px] font-semibold text-white/80 ring-1 ring-white/10 transition hover:bg-white/[0.1]"
+          class="w-full rounded-full py-3 text-[12.5px] font-semibold transition {rateLimited
+            ? 'bg-white text-ink hover:bg-white/90'
+            : 'bg-white/[0.06] text-white/80 ring-1 ring-white/10 hover:bg-white/[0.1]'}"
         >
           Close
         </button>

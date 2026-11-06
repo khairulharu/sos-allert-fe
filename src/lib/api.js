@@ -33,6 +33,15 @@ export function setStoredUser(user) {
   else localStorage.removeItem(USER_KEY)
 }
 
+function parseRetryAfter(value) {
+  if (!value) return null
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds > 0) return Math.ceil(seconds)
+  const when = Date.parse(value)
+  if (Number.isFinite(when)) return Math.max(0, Math.ceil((when - Date.now()) / 1000))
+  return null
+}
+
 async function request(method, path, body, { token = true, raw = false, headers } = {}) {
   headers = headers || {}
   headers.Accept = 'application/json'
@@ -70,6 +79,7 @@ async function request(method, path, body, { token = true, raw = false, headers 
     const err = new Error(detail)
     err.status = resp.status
     err.payload = payload
+    err.retryAfter = parseRetryAfter(resp.headers.get('Retry-After'))
     throw err
   }
   return raw ? resp : payload?.data

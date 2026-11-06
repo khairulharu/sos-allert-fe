@@ -45,7 +45,9 @@ function parseRetryAfter(value) {
 async function request(method, path, body, { token = true, raw = false, headers } = {}) {
   headers = headers || {}
   headers.Accept = 'application/json'
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
+  // Let the browser set the multipart boundary for FormData.
+  if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json'
   if (token) {
     const t = getToken()
     if (t) headers.Authorization = t
@@ -56,7 +58,7 @@ async function request(method, path, body, { token = true, raw = false, headers 
     resp = await fetch(API_BASE + path, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
     })
   } catch (err) {
     const e = new Error(`Network error — is the backend running at ${API_BASE}?`)
@@ -118,6 +120,11 @@ export const sos = {
   resolve: (alertId) => request('POST', `/api/sos/${alertId}/resolve`),
   respond: (alertId, lat, lng) =>
     request('POST', `/api/sos/${alertId}/respond`, { responder_latitude: lat, responder_longitude: lng }),
+  uploadMedia: (alertId, blob, filename = 'sos-audio.webm') => {
+    const form = new FormData()
+    form.append('file', blob, filename)
+    return request('POST', `/api/sos/${encodeURIComponent(alertId)}/media`, form)
+  },
 }
 
 // ---- Emergency contacts ----

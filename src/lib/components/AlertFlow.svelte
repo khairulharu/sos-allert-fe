@@ -1,6 +1,19 @@
 <script>
+  import { onDestroy } from 'svelte'
   import { fade, scale } from 'svelte/transition'
-  import { X, Phone, MessageCircle, ShieldCheck, Check, MapPin, Radio, Loader2, AlertTriangle } from '@lucide/svelte'
+  import {
+    X,
+    Phone,
+    MessageCircle,
+    ShieldCheck,
+    Check,
+    MapPin,
+    Radio,
+    Loader2,
+    AlertTriangle,
+    Mic,
+    Square,
+  } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
@@ -22,6 +35,18 @@
   let confirming = $state(false)
   let errorMsg = $state('')
   let rateLimited = $state(false)
+
+  // ---- 10 s audio evidence ----
+  const MAX_MEDIA_SECONDS = 10
+  let mediaState = $state('idle') // idle | starting | recording | uploading | uploaded | error
+  let mediaSeconds = $state(MAX_MEDIA_SECONDS)
+  let mediaError = $state('')
+  let mediaUploads = $state(0)
+  let mediaRecorder = null
+  let mediaStream = null
+  let mediaTimer = null
+  let mediaChunks = []
+  let destroyed = false
 
   const liveStatus = $derived(live?.status || null)
   const liveConnection = $derived(live?.connection || 'idle')
@@ -134,6 +159,160 @@
     confirming = false
     doResolve()
   }
+
+  // ---- audio evidence recording ----
+  function pickAudioMime() {
+    if (typeof MediaRecorder === 'undefined') return ''
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/mp4',
+      'audio/ogg;codecs=opus',
+    ]
+    return (
+      candidates.find(
+        (type) => !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(type),
+      ) || ''
+    )
+  }
+
+  function stopTracks() {
+    mediaStream?.getTracks().forEach((track) => track.stop())
+    mediaStream = null
+  }
+
+  function cleanupMedia() {
+    clearInterval(mediaTimer)
+    mediaTimer = null
+    if (mediaRecorder) {
+      mediaRecorder.onstop = null
+      mediaRecorder.ondataavailable = null
+      try {
+        if (mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+      } catch {
+        /* already stopped */
+      }
+      mediaRecorder = null
+    }
+    stopTracks()
+    mediaChunks = []
+  }
+
+  async function startRecording() {
+    if (
+      !alertId ||
+      phase !== 'active' ||
+      mediaState === 'starting' ||
+      mediaState === 'recording' ||
+      mediaState === 'uploading'
+    ) {
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      mediaState = 'error'
+      mediaError = 'Audio recording is not supported in this browser.'
+      return
+    }
+
+    mediaError = ''
+    mediaState = 'starting'
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (destroyed || phase !== 'active') {
+        stream.getTracks().forEach((track) => track.stop())
+        mediaState = 'idle'
+        return
+      }
+      mediaStream = stream
+      const mimeType = pickAudioMime()
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      mediaRecorder = recorder
+      mediaChunks = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) mediaChunks.push(event.data)
+      }
+      recorder.onstop = () => finalizeRecording(recorder)
+
+      recorder.start(250)
+      mediaState = 'recording'
+      mediaSeconds = MAX_MEDIA_SECONDS
+      clearInterval(mediaTimer)
+      mediaTimer = setInterval(() => {
+        mediaSeconds = Math.max(0, mediaSeconds - 1)
+        if (mediaSeconds === 0) stopRecording()
+      }, 1000)
+    } catch (err) {
+      cleanupMedia()
+      mediaState = 'error'
+      mediaError =
+        err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
+          ? 'Microphone permission was denied.'
+          : err?.message || 'Could not start recording.'
+    }
+  }
+
+  function stopRecording() {
+    clearInterval(mediaTimer)
+    mediaTimer = null
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      try {
+        mediaRecorder.stop()
+      } catch {
+        cleanupMedia()
+        mediaState = 'idle'
+      }
+    }
+  }
+
+  async function finalizeRecording(recorder) {
+    clearInterval(mediaTimer)
+    mediaTimer = null
+    mediaRecorder = null
+    stopTracks()
+
+    const chunks = mediaChunks
+    mediaChunks = []
+    const type = recorder.mimeType || chunks[0]?.type || 'audio/webm'
+    const blob = new Blob(chunks, { type })
+
+    if (destroyed) return
+    if (!blob.size) {
+      mediaState = 'error'
+      mediaError = 'No audio was captured. Try again.'
+      return
+    }
+
+    const extension = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm'
+    mediaState = 'uploading'
+    mediaError = ''
+    try {
+      await sosApi.uploadMedia(alertId, blob, `sos-${alertId}-${Date.now()}.${extension}`)
+      if (destroyed) return
+      mediaUploads += 1
+      mediaState = 'uploaded'
+    } catch (err) {
+      if (destroyed) return
+      mediaState = 'error'
+      mediaError =
+        err?.status === 412
+          ? 'Media storage is not configured on the server.'
+          : err?.message || 'Could not upload the audio.'
+    }
+  }
+
+  onDestroy(() => {
+    destroyed = true
+    cleanupMedia()
+  })
+
+  $effect(() => {
+    if (phase !== 'active' && (mediaState === 'recording' || mediaState === 'starting')) {
+      cleanupMedia()
+      mediaState = 'idle'
+      mediaSeconds = MAX_MEDIA_SECONDS
+    }
+  })
 
   function startCountdown() {
     if (!description.trim()) { description = 'Emergency'; }
@@ -374,6 +553,7 @@
   </div>
   {:else if phase === 'active'}
     <!-- ACTIVE ALERT -->
+    <div class="absolute inset-0 bg-gradient-to-b from-[#14171D] via-[#0F1216] to-[#0B0D11]"></div>
     <div
       class="pointer-events-none absolute -left-24 -top-24 h-64 w-64 rounded-full bg-sos/30 blur-3xl"
     ></div>
@@ -459,6 +639,68 @@
           </div>
         </div>
       {/if}
+
+      <!-- AUDIO EVIDENCE -->
+      <div class="mt-4 rounded-2xl bg-white/[0.035] p-3.5 ring-1 ring-white/[0.06]">
+        <div class="flex items-center justify-between gap-2">
+          <p
+            class="inline-flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35"
+          >
+            <Mic size={11} /> Audio evidence
+          </p>
+          <span class="text-[9px] text-white/30">max 10 s · responder-only</span>
+        </div>
+
+        {#if mediaState === 'recording'}
+          <div class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+            <div
+              class="h-full rounded-full bg-sos transition-[width] duration-1000"
+              style="width: {((MAX_MEDIA_SECONDS - mediaSeconds) / MAX_MEDIA_SECONDS) * 100}%"
+            ></div>
+          </div>
+        {/if}
+
+        <button
+          type="button"
+          onclick={mediaState === 'recording' ? stopRecording : startRecording}
+          disabled={mediaState === 'starting' || mediaState === 'uploading'}
+          class="mt-2.5 flex w-full items-center justify-center gap-2 rounded-full py-2.5 text-[11.5px] font-semibold ring-1 transition disabled:opacity-60 {mediaState ===
+          'recording'
+            ? 'bg-sos text-white ring-sos'
+            : 'bg-white/[0.06] text-white/80 ring-white/10 hover:bg-white/[0.1]'}"
+        >
+          {#if mediaState === 'recording'}
+            <Square size={12} fill="currentColor" />
+            Stop recording · {mediaSeconds}s
+          {:else if mediaState === 'starting' || mediaState === 'uploading'}
+            <Loader2 size={13} class="animate-spin" />
+            {mediaState === 'starting' ? 'Starting microphone…' : 'Uploading evidence…'}
+          {:else if mediaState === 'uploaded'}
+            <Mic size={13} />
+            Record another clip
+          {:else if mediaState === 'error'}
+            <Mic size={13} />
+            Try recording again
+          {:else}
+            <Mic size={13} />
+            Record 10 s audio
+          {/if}
+        </button>
+
+        {#if mediaState === 'uploaded'}
+          <p class="mt-2 flex items-center gap-1.5 text-[9.5px] text-[#6EE7B7]">
+            <Check size={11} />
+            Audio uploaded{mediaUploads > 1 ? ` · ${mediaUploads} clips` : ''}. Only responders can
+            access it.
+          </p>
+        {:else if mediaError}
+          <p class="mt-2 text-[9.5px] leading-snug text-[#FF8080]">{mediaError}</p>
+        {:else}
+          <p class="mt-2 text-[9.5px] leading-snug text-white/35">
+            Records ambient audio from your microphone. You can stop early.
+          </p>
+        {/if}
+      </div>
 
       <div class="mt-4 flex items-center justify-between px-0.5">
         <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">

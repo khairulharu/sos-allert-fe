@@ -47,16 +47,19 @@ cd ../backend && go run cmd/web/main.go
   (`/ws/sos/:alertId/track?token=`; breadcrumbs every 5 s, live pin,
   `ALERT_STATUS`), HTTP 429 handling (auth cooldown/countdown, SOS limit
   screen), real incoming responder alerts (`GET /api/sos/inbox` polled every
-  12 s, real sheet/banner, `POST /respond`, then responder WS stream).
+  12 s, real sheet/banner, `POST /respond`, then responder WS stream),
+  10 s audio evidence via `MediaRecorder` + multipart upload.
 - Not wired yet:
-  - media upload/download;
+  - video capture and in-app playback/download of media;
   - native push (FCM/APNs) — inbox polling is the browser fallback.
 
 ## Important files
 
 - `src/lib/api.js` — fetch wrapper, raw token, API base URL. Error objects carry
   `status`, `payload`, and `retryAfter` (parsed from `Retry-After` seconds or
-  HTTP date).
+  HTTP date). `request()` passes `FormData` through untouched (no JSON
+  Content-Type) for multipart uploads; `sos.uploadMedia(alertId, blob, filename)`
+  posts field `file` to `/api/sos/:id/media`.
 - `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
   by the auth and SOS 429 UIs.
 - `src/lib/tracking.js` — two independent WebSocket channels sharing one
@@ -101,7 +104,10 @@ cd ../backend && go run cmd/web/main.go
 - `src/lib/components/AlertFlow.svelte` — describe → 5 s countdown → trigger →
   triage → resolve. Starts tracking via `ontrack`, sends throttled breadcrumbs
   while active, shows the WS connection state, and ends on terminal
-  `ALERT_STATUS`.
+  `ALERT_STATUS`. Active view also owns audio evidence: `getUserMedia` +
+  `MediaRecorder`, 10 s auto-stop, explicit stop, mime fallback
+  (webm/opus → webm → mp4 → ogg), multipart upload, and cleanup on unmount or
+  terminal status.
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
 - `src/lib/components/ProfileView.svelte` — profile + settings toggles.

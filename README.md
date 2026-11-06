@@ -65,7 +65,7 @@ npm run build   # artifact: dist/
 | **Cancel** | Uses your **safe PIN** (`POST /api/sos/:id/cancel`); set the PIN via `PATCH /api/users/_current` `{"safe_pin":"1234"}`. |
 | **Alerts** | Real history from `GET /api/sos/active` + `/api/sos/inbox`, merged and deduped, with status chips and severity/summary metadata. |
 | **Contacts** | Real emergency contacts from `GET/POST /api/emergency-contacts`, with an inline add form. |
-| **Profile** | Real user from `GET /api/users/_current` (name, created date), sign out wired. |
+| **Profile** | Real user from `GET /api/users/_current` (name, created date), sign out wired. The stat cards and emergency info are still demo values. |
 
 ## Not yet implemented
 
@@ -92,12 +92,12 @@ npm run build   # artifact: dist/
 
 ```
 src/
-├── App.svelte                  # app shell, auth gate, view switching, SOS + toast orchestration
+├── App.svelte                  # app shell, auth gate, WS/inbox + SOS orchestration
 ├── app.css                     # Tailwind theme, base styles, animations
 ├── main.js
 └── lib/
     ├── api.js                  # fetch client for the Go backend (raw-token auth)
-    ├── tracking.js             # WS live tracking store (connect/reconnect/breadcrumbs)
+    ├── tracking.js             # WS live tracking: sender + responder channels
     ├── rateLimit.js            # 429 Retry-After parsing + countdown formatting
     ├── alertMeta.js            # alert labels, relative time, haversine distance
     ├── stores.js               # Svelte session store (login/register/logout/restore)
@@ -106,10 +106,10 @@ src/
         ├── AuthScreen.svelte   # sign in / create account
         ├── BottomNav.svelte    # floating nav with centered SOS button
         ├── SosButton.svelte    # hold-to-trigger button with progress ring
-        ├── AlertFlow.svelte    # describe → countdown → sending → active + AI triage → safe
-        ├── AlertIncoming.svelte# incoming SOS bottom sheet (demo content)
-        ├── MapCard.svelte      # Leaflet/OSM map: own dot, masked pins, radius
-        ├── HomeView.svelte     # protection card, live nearby responders (15 s poll)
+        ├── AlertFlow.svelte    # describe → countdown → active + triage + 10 s audio → safe
+        ├── AlertIncoming.svelte# real inbox alert sheet + respond
+        ├── MapCard.svelte      # Leaflet/OSM: own dot, focus/live pins, masked responders, radius
+        ├── HomeView.svelte     # protection card, incoming banner, nearby responders (15 s poll)
         ├── AlertsView.svelte
         ├── ContactsView.svelte
         └── ProfileView.svelte

@@ -2,7 +2,7 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `1ce1acb` (location APIs, auth rate limit, audio STT).
+Backend state at handoff: commit `dac6219` (location APIs, auth rate limit, audio STT).
 The mirrored API contract is at frontend commit `6cd9ea0`.
 
 ## Run
@@ -24,7 +24,7 @@ cd ../backend && go run cmd/web/main.go
 
 - Full spec: `api/api-spec.json`
 - Human summary: `api/api.md`
-- Both files are mirrored from `../backend/api/` at backend commit `1ce1acb`
+- Both files are mirrored from `../backend/api/` at backend commit `dac6219`
   (frontend commit `6cd9ea0`). The backend copy remains the source of truth;
   re-copy after backend API changes. The frontend copy exists so a session
   opened in this repo has the contract without leaving the workspace.
@@ -33,8 +33,9 @@ cd ../backend && go run cmd/web/main.go
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.
 - Error envelope: `{ "errors": "<message>" }` with the HTTP status.
 - All timestamps are epoch milliseconds (`int64`).
-- CORS allows `http://localhost:5173` (and other origins) with
-  `Authorization` and `X-Idempotency-Key`.
+- CORS allows any origin (`AllowOrigins: "*"`) with `Authorization` and
+  `X-Idempotency-Key`; only `Content-Disposition` is exposed (see rate-limit
+  gap below).
 - Protected routes: everything except `POST /api/users`,
   `POST /api/users/_login`, and `GET /metrics`.
 
@@ -177,15 +178,14 @@ backend name lookup later (privacy decision).
    coordinates and retries `GET`; it never blocks on geolocation.
 3. `HomeView` polls `nearby(1000)` every 15 s, skipping ticks while the tab is
    hidden. Pins and the list update reactively.
-4. `MapCard.svelte` is Leaflet + OSM, centered on own coords, with radius
-   circle, recenter, and radius toggle controls. It keeps the `max-w-[430px]`
-   shell and existing card styling.
+4. `MapCard.svelte` is Leaflet + OSM, centered on own coords (or `focus` for
+   an incoming alert), with radius circle, recenter, and radius toggle controls.
+   It keeps the `max-w-[430px]` shell and existing card styling.
 5. `401` from location APIs invokes `onsessionexpired` → `logout()` in
    `App.svelte`, returning to the auth screen.
 
-Remaining map work: backend name lookup (privacy decision) for friendly labels,
-a fullscreen/responder-detail view, and responder-side WS tracking once the
-incoming-alert sheet is real.
+Remaining map work: backend name lookup (privacy decision) for friendly labels
+and a fullscreen/responder-detail view.
 
 ## Audio STT contract (backend, implemented)
 

@@ -61,6 +61,16 @@
     }
   })
 
+  function placeLabel(point) {
+    if (!point) return '—'
+    if (typeof point === 'string') return point
+    const latitude = Number(point.latitude)
+    const longitude = Number(point.longitude)
+    return Number.isFinite(latitude) && Number.isFinite(longitude)
+      ? `${latitude.toFixed(3)}, ${longitude.toFixed(3)}`
+      : '—'
+  }
+
   function normalize(a) {
     const isSelf = a.sender?.id === $session?.user?.id
     const type = isSelf ? 'sent' : 'received'
@@ -84,7 +94,7 @@
       severity,
       emergency,
       summary: a.summary || `${emergency} alert`,
-      place: a.initial_location || a.latest_location || '—',
+      place: placeLabel(a.latest_location || a.initial_location),
       responders: Number(a.responders_en_route) || 0,
       statusKey: a.status,
       status: statusLabel[a.status] || a.status,

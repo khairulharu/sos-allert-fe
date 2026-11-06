@@ -21,8 +21,12 @@ cd ../backend && go run cmd/web/main.go
 
 ## Backend contract (authoritative)
 
-- Full spec: `../backend/api/api-spec.json`
-- Human summary: `../backend/api/api.md`
+- Full spec: `api/api-spec.json`
+- Human summary: `api/api.md`
+- Both files are mirrored from `../backend/api/` at backend commit `cf328eb`.
+  The backend copy remains the source of truth; re-copy after backend API
+  changes. The frontend copy exists so a session opened in this repo has the
+  contract without leaving the workspace.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.

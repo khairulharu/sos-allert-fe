@@ -1,15 +1,41 @@
 <script>
   import { fade, fly } from 'svelte/transition'
-  import { X, MapPin, HeartPulse, Clock, Navigation, ShieldAlert } from '@lucide/svelte'
+  import {
+    X,
+    MapPin,
+    HeartPulse,
+    Clock,
+    Navigation,
+    ShieldAlert,
+    Loader2,
+  } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
+  import {
+    emergencyLabel,
+    initialsFor,
+    timeAgo,
+    distanceMeters,
+    formatDistance,
+  } from '$lib/alertMeta.js'
 
-  let { onclose, onrespond } = $props()
+  let { alert = null, own = null, busy = false, error = '', onclose, onrespond } = $props()
 
-  const details = [
-    { icon: MapPin, label: 'Distance', value: '400 m away' },
-    { icon: HeartPulse, label: 'Type', value: 'Medical help' },
-    { icon: Clock, label: 'Reported', value: '1 min ago' },
-  ]
+  const senderName = $derived(alert?.sender?.name || 'Neighbor')
+  const senderInitials = $derived(initialsFor(senderName))
+  const typeLabel = $derived(emergencyLabel(alert?.emergency_type))
+  const location = $derived(alert?.latest_location || alert?.initial_location || null)
+  const distance = $derived(distanceMeters(own, location))
+  const distanceText = $derived(distance != null ? `±${formatDistance(distance)}` : 'nearby')
+  const summary = $derived(alert?.summary || `${typeLabel} emergency`)
+  const statusLabel = $derived(
+    alert?.status === 'ACKNOWLEDGED' ? 'Responder en route' : 'Waiting for help',
+  )
+
+  const details = $derived([
+    { icon: MapPin, label: 'Distance', value: distanceText },
+    { icon: HeartPulse, label: 'Type', value: typeLabel },
+    { icon: Clock, label: 'Reported', value: timeAgo(alert?.triggered_at) },
+  ])
 </script>
 
 <div class="absolute inset-0 z-[45]" role="dialog" aria-modal="true" aria-label="Nearby SOS alert">
@@ -49,29 +75,43 @@
 
       <div class="mt-4 flex items-center gap-3">
         <span class="relative">
-          <span class="grid h-12 w-12 place-items-center rounded-full bg-[#F2C879] text-[14px] font-bold text-[#6b4a10]"
-            >SM</span
+          <span
+            class="grid h-12 w-12 place-items-center rounded-full bg-[#F2C879] text-[14px] font-bold text-[#6b4a10]"
+            >{senderInitials}</span
           >
-          <span class="absolute -bottom-0.5 -right-0.5 grid h-4 w-4 place-items-center rounded-full bg-sos ring-2 ring-[#F7F8FA]">
+          <span
+            class="absolute -bottom-0.5 -right-0.5 grid h-4 w-4 place-items-center rounded-full bg-sos ring-2 ring-[#F7F8FA]"
+          >
             <span class="h-1.5 w-1.5 rounded-full bg-white animate-pulse"></span>
           </span>
         </span>
         <div class="min-w-0 flex-1">
-          <h2 class="text-[17px] font-semibold tracking-[-0.02em]">Sarah Mitchell</h2>
-          <p class="mt-0.5 text-[11px] text-muted">Neighbor · Verified responder</p>
+          <h2 class="truncate text-[17px] font-semibold tracking-[-0.02em]">{senderName}</h2>
+          <p class="mt-0.5 text-[11px] text-muted">
+            {alert?.masked ? 'Approximate location' : 'Live location'} · {statusLabel}
+          </p>
         </div>
-        <span class="rounded-full bg-white px-2.5 py-1 text-[9.5px] font-semibold text-ink/60 ring-1 ring-black/5"
-          >400 m</span
+        <span
+          class="rounded-full bg-white px-2.5 py-1 text-[9.5px] font-semibold text-ink/60 ring-1 ring-black/5"
+          >{distanceText}</span
         >
       </div>
 
       <p class="mt-3 text-[12px] leading-relaxed text-ink/70">
-        Sarah triggered an SOS nearby and needs medical help. Your live location is shared only if you
+        {senderName} triggered a nearby SOS: {summary}. Your live location is shared only if you
         respond.
       </p>
 
       <div class="mt-4">
-        <MapCard height="h-[132px]" showFooter={false} radiusLabel="400 m from you" />
+        <MapCard
+          height="h-[132px]"
+          showFooter={false}
+          showControls={false}
+          showRadiusDefault={false}
+          radiusLabel={distanceText}
+          own={own}
+          focus={location}
+        />
       </div>
 
       <div class="mt-3.5 grid grid-cols-3 gap-2">
@@ -79,20 +119,35 @@
           {@const Icon = detail.icon}
           <div class="card rounded-2xl p-2.5">
             <Icon size={13} class="text-muted" />
-            <p class="mt-1.5 text-[8.5px] font-semibold uppercase tracking-[0.1em] text-muted">{detail.label}</p>
+            <p class="mt-1.5 text-[8.5px] font-semibold uppercase tracking-[0.1em] text-muted">
+              {detail.label}
+            </p>
             <p class="mt-0.5 text-[10.5px] font-semibold text-ink">{detail.value}</p>
           </div>
         {/each}
       </div>
 
+      {#if error}
+        <p class="mt-3 rounded-2xl bg-[#FFECEB] px-3.5 py-2.5 text-[11.5px] font-medium text-[#b3241d]">
+          {error}
+        </p>
+      {/if}
+
       <div class="mt-4 space-y-1.5">
         <button
           type="button"
           onclick={onrespond}
-          class="flex w-full items-center justify-center gap-2 rounded-full bg-sos py-3.5 text-[13px] font-semibold text-white shadow-[0_12px_28px_-10px_rgba(255,59,48,0.7)] transition active:scale-[0.98]"
+          disabled={busy}
+          aria-busy={busy}
+          class="flex w-full items-center justify-center gap-2 rounded-full bg-sos py-3.5 text-[13px] font-semibold text-white shadow-[0_12px_28px_-10px_rgba(255,59,48,0.7)] transition active:scale-[0.98] disabled:opacity-70"
         >
-          <Navigation size={15} strokeWidth={2.4} />
-          I'm on my way
+          {#if busy}
+            <Loader2 size={15} class="animate-spin" />
+            Sending response…
+          {:else}
+            <Navigation size={15} strokeWidth={2.4} />
+            I'm coming
+          {/if}
         </button>
         <button
           type="button"

@@ -46,13 +46,11 @@ cd ../backend && go run cmd/web/main.go
   and generic "Responder" rows, no names), sender-side WebSocket live tracking
   (`/ws/sos/:alertId/track?token=`; breadcrumbs every 5 s, live pin,
   `ALERT_STATUS`), HTTP 429 handling (auth cooldown/countdown, SOS limit
-  screen).
+  screen), real incoming responder alerts (`GET /api/sos/inbox` polled every
+  12 s, real sheet/banner, `POST /respond`, then responder WS stream).
 - Not wired yet:
   - media upload/download;
-  - native push (FCM/APNs);
-  - responder-side tracking UI (`AlertIncoming.svelte` is demo content; the
-    WS client in `tracking.js` is generic but only the sender's own alert is
-    subscribed today).
+  - native push (FCM/APNs) — inbox polling is the browser fallback.
 
 ## Important files
 
@@ -61,20 +59,29 @@ cd ../backend && go run cmd/web/main.go
   HTTP date).
 - `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
   by the auth and SOS 429 UIs.
-- `src/lib/tracking.js` — WebSocket live-tracking store. Builds the WS URL
-  (`VITE_WS_URL` or `ws(s)://` derived from `VITE_API_URL`), sends the raw token
-  as `?token=`, reconnects with exponential backoff, queues breadcrumbs while
-  connecting, and stops on terminal `ALERT_STATUS` or an `{error}` frame.
-  Exports `tracking`, `startTracking(alertId, seed)`, `stopTracking()`,
-  `sendBreadcrumb(fields)`.
+- `src/lib/tracking.js` — two independent WebSocket channels sharing one
+  connection implementation. Builds the WS URL (`VITE_WS_URL` or `ws(s)://`
+  derived from `VITE_API_URL`), sends the raw token as `?token=`, reconnects
+  with exponential backoff, queues breadcrumbs while connecting, and stops on
+  terminal `ALERT_STATUS` or an `{error}` frame.
+  Sender: `tracking`, `startTracking(alertId, seed)`, `stopTracking()`,
+  `sendBreadcrumb(fields)`. Responder (read-only): `responderTracking`,
+  `startResponderTracking(alertId, seed)`, `stopResponderTracking()`.
+- `src/lib/alertMeta.js` — `emergencyLabel`, `initialsFor`, `timeAgo`,
+  `formatDistance`, `formatEta`, and `distanceMeters` (haversine) shared by the
+  incoming sheet and Home banner.
 - `src/lib/stores.js` — session store. **Do not regress** `restoreSession()`:
   it must use `getToken()` (localStorage key `sos_alert_token`), never
   `user.id`. Using `user.id` caused every authenticated call after login to
   return 401 (fixed in commit `97dc741`).
 - `src/App.svelte` — auth gate, geolocation heartbeat every 60 s, toast, and
-  WS orchestration. On restore/login it calls `GET /api/sos/active` once and
-  starts tracking the user's active alert; trigger passes the new id through
-  `ontrack`. Terminal `ALERT_STATUS` while Home is visible raises a toast.
+  WS/inbox orchestration. On restore/login it calls `GET /api/sos/active` once
+  and starts tracking the user's active alert; trigger passes the new id through
+  `ontrack`. It also polls `GET /api/sos/inbox` every 12 s: alerts already
+  present on the first poll show as a banner, new alerts auto-open the sheet,
+  and dismissing records the id so it is not shown again. `POST /respond` uses
+  browser coords → stored heartbeat → fallback; success starts the responder
+  WS channel and shows ETA/distance. Terminal statuses raise a toast.
   Fallback coords are Bali (`-8.65, 115.22`) if browser geolocation is denied;
   heartbeat errors are currently swallowed.
 - `src/lib/components/HomeView.svelte` — protection card, responder count,
@@ -83,9 +90,14 @@ cd ../backend && go run cmd/web/main.go
   calls `onsessionexpired` on `401` so `App.svelte` logs out.
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no
   token). Props: `own` (`GET /api/location` payload), `responders`
-  (`nearby` items), `live` (tracking store frame), `radiusM`. Draws the radius
-  circle, blue own dot, generic masked responder pins, and a pulsing red pin
-  that follows `LOCATION_UPDATE`; the live pin is removed on terminal status.
+  (`nearby` items), `focus` (incoming alert location; centers the map and draws
+  an amber pin), `live` (tracking store frame), `radiusM`, `showControls`,
+  `showRadiusDefault`. Draws the radius circle, blue own dot, generic masked
+  responder pins, and a pulsing red pin that follows `LOCATION_UPDATE`; the
+  live pin is removed on terminal status.
+- `src/lib/components/AlertIncoming.svelte` — real inbox alert sheet. Receives
+  one `AlertDetailResponse`, computes approximate distance from own coords to
+  the masked location, and calls the app's respond handler. No demo copy.
 - `src/lib/components/AlertFlow.svelte` — describe → 5 s countdown → trigger →
   triage → resolve. Starts tracking via `ontrack`, sends throttled breadcrumbs
   while active, shows the WS connection state, and ends on terminal
@@ -183,9 +195,16 @@ incoming-alert sheet is real.
   environments need `migrate up` (see `../backend/README.md`).
 - Nearby respond coords are masked; do not expect exact positions.
 - FCM/APNs/Twilio credentials are not configured, so push is log-only.
-- Pending backend items: push credentials, media frontend wiring, responder
-  incoming-alert WS UI, Redis GEO TTL/cleanup, and optional user names in
-  nearby results.
+- Pending backend items: push credentials, media frontend wiring, Redis GEO
+  TTL/cleanup, and optional user names in nearby results.
+- Incoming-alert semantics: `GET /api/sos/inbox` is the browser substitute for
+  push (FCM/APNs is log-only). WS tracking is per-alert and only authorizes the
+  sender or a recorded responder, so the app polls the inbox first and connects
+  to WS after `POST /respond`. Inbox coords are masked (`masked: true`) until
+  the user responds, so the sheet's distance is approximate.
+- `alert_responses` has no unique `(alert_id, responder_id)` constraint; the UI
+  guards double submits and filters already-responded alerts out of the
+  incoming list (`masked !== true` means participant).
 - Rate-limit gap: CORS currently exposes only `Content-Disposition`, so
   cross-origin JS cannot read `Retry-After`. The auth UI falls back to the
   documented 15-minute lockout; adding `Retry-After` to `ExposeHeaders` makes

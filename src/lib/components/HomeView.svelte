@@ -16,12 +16,13 @@
   } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
   import { contacts, location as locationApi } from '$lib/api.js'
+  import { emergencyLabel, distanceMeters, formatDistance } from '$lib/alertMeta.js'
 
   let {
     user,
     onnavigate,
     onviewalert,
-    showIncoming = true,
+    incoming = null,
     ondismissincoming,
     onnotify,
     live = null,
@@ -41,6 +42,17 @@
         : '—'),
   )
   const area = $derived(user?.area || 'Kemang, Jakarta Selatan')
+
+  const incomingName = $derived(incoming?.sender?.name || 'Neighbor')
+  const incomingType = $derived(emergencyLabel(incoming?.emergency_type))
+  const incomingLocation = $derived(
+    incoming?.latest_location || incoming?.initial_location || null,
+  )
+  const incomingDistance = $derived(distanceMeters(coords, incomingLocation))
+  const incomingDistanceText = $derived(
+    incomingDistance != null ? formatDistance(incomingDistance) : 'nearby',
+  )
+  const incomingWhen = $derived(timeAgo(incoming?.triggered_at))
 
   let contactCount = $state(null)
 
@@ -328,7 +340,7 @@
   </section>
 
   <!-- incoming alert -->
-  {#if showIncoming}
+  {#if incoming}
     <section
       class="animate-rise mt-3.5 flex items-center gap-3 rounded-[20px] bg-[#FFF1F0] p-3 ring-1 ring-sos/10"
     >
@@ -337,8 +349,12 @@
         <Siren size={16} class="relative text-sos" strokeWidth={2.3} />
       </span>
       <button type="button" onclick={onviewalert} class="min-w-0 flex-1 text-left">
-        <p class="text-[12px] font-semibold leading-tight text-[#8f1d17]">SOS nearby · Sarah M.</p>
-        <p class="mt-0.5 text-[11px] leading-tight text-[#b0544f]">Medical help · 400 m away · just now</p>
+        <p class="truncate text-[12px] font-semibold leading-tight text-[#8f1d17]">
+          SOS nearby · {incomingName}
+        </p>
+        <p class="mt-0.5 text-[11px] leading-tight text-[#b0544f]">
+          {incomingType} · {incomingDistanceText} away · {incomingWhen}
+        </p>
       </button>
       <button
         type="button"

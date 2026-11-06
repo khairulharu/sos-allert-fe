@@ -59,6 +59,7 @@ npm run build   # artifact: dist/
 | **Location heartbeat** | `PUT /api/location` sent at startup (browser geolocation) and every 60 s, so you appear as a nearby responder. |
 | **Responder map** | Leaflet + OpenStreetMap (no API token). Centers on your heartbeat, draws the 1 km radius, masked responder pins and a live list from `GET /api/location/nearby`; polls every 15 s. Backend returns only `user_id` + ~100 m-rounded coordinates, so the UI shows generic "Responder" rows and pins. |
 | **Live tracking (WebSocket)** | The sender's active alert connects to `WS /ws/sos/:alertId/track?token=<raw token>`, sends a breadcrumb every 5 s (throttled), and applies `LOCATION_UPDATE` / `ALERT_STATUS` frames. The live pin moves on the Home map; acknowledge/resolve/cancel/expire update the active UI. Reconnects with backoff, and cold start resumes the own active alert via `GET /api/sos/active`. |
+| **Incoming responder alerts** | Polls `GET /api/sos/inbox` every 12 s while authenticated. Pre-existing alerts show as a Home banner; new alerts from a later poll auto-open the real `AlertIncoming` sheet with sender, type, summary, message and approximate distance (computed from your heartbeat + masked coords). "I'm coming" calls `POST /api/sos/:id/respond` and shows the returned ETA/distance, then subscribes to that alert's WS stream for the victim's live pin and status. |
 | **SOS flow with AI triage** | Hold SOS → describe what happened → 5 s cancellable countdown → real `POST /api/sos` with description → **AI triage result card**: emergency type, severity 0–1 with bar, summary, and the 1/2/5 km responder radius the severity picked. "I'm safe — end alert" calls `POST /api/sos/:id/resolve`. |
 | **Cancel** | Uses your **safe PIN** (`POST /api/sos/:id/cancel`); set the PIN via `PATCH /api/users/_current` `{"safe_pin":"1234"}`. |
 | **Alerts** | Real history from `GET /api/sos/active` + `/api/sos/inbox`, merged and deduped, with status chips and severity/summary metadata. |
@@ -68,11 +69,9 @@ npm run build   # artifact: dist/
 ## Not yet implemented
 
 - **Media upload** (`POST /api/sos/:id/media`) — no camera/audio capture in the UI.
-- **Responder-side live tracking UI** — the WebSocket client is generic, but
-  `AlertIncoming.svelte` still uses demo content and no responder detail screen
-  subscribes to `LOCATION_UPDATE` yet. Only the sender's own alert is tracked.
-- **Push notifications (FCM/APNs)** — the demo runs in a browser; native push tokens
-  are not registered.
+- **Push notifications (FCM/APNs)** — the demo runs in a browser; native push
+  tokens are not registered, so incoming alerts rely on inbox polling (12 s)
+  instead of instant push delivery.
 - **AI provider**: the backend defaults to the **offline keyword classifier**
   (zero-cost, deterministic). To use a live LLM (OpenAI-compatible), set in the
   backend `config.json` → `ai.provider: "openai"` + `ai.openai.*` key; the UI
@@ -92,6 +91,7 @@ src/
     ├── api.js                  # fetch client for the Go backend (raw-token auth)
     ├── tracking.js             # WS live tracking store (connect/reconnect/breadcrumbs)
     ├── rateLimit.js            # 429 Retry-After parsing + countdown formatting
+    ├── alertMeta.js            # alert labels, relative time, haversine distance
     ├── stores.js               # Svelte session store (login/register/logout/restore)
     ├── data.js                 # leftover demo fallback (ProfileView only)
     └── components/

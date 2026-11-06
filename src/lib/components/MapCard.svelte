@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, untrack } from 'svelte'
   import { Crosshair, Layers, ChevronRight } from '@lucide/svelte'
   import L from 'leaflet'
   import 'leaflet/dist/leaflet.css'
@@ -11,8 +11,11 @@
     onopen,
     responders = [],
     own = null,
+    focus = null,
     live = null,
     radiusM = 1000,
+    showControls = true,
+    showRadiusDefault = true,
   } = $props()
 
   const FALLBACK_CENTER = [-6.2, 106.816]
@@ -22,14 +25,20 @@
   let map = null
   let markersLayer = null
   let liveMarker = null
-  let centeredOnOwn = false
-  let showRadius = $state(true)
+  let centered = false
+  let showRadius = $state(untrack(() => showRadiusDefault))
 
-  const center = $derived(
-    own && Number.isFinite(own.latitude) && Number.isFinite(own.longitude)
-      ? [own.latitude, own.longitude]
-      : FALLBACK_CENTER,
-  )
+  function coordsFor(value) {
+    return value &&
+      Number.isFinite(value.latitude) &&
+      Number.isFinite(value.longitude)
+      ? [value.latitude, value.longitude]
+      : null
+  }
+
+  const focusCoords = $derived(coordsFor(focus))
+  const ownCoords = $derived(coordsFor(own))
+  const center = $derived(focusCoords || ownCoords || FALLBACK_CENTER)
 
   const label = $derived(
     radiusLabel ||
@@ -71,6 +80,15 @@
 
   function validCoords(latitude, longitude) {
     return Number.isFinite(latitude) && Number.isFinite(longitude)
+  }
+
+  function focusIcon() {
+    return L.divIcon({
+      className: 'sos-map-icon',
+      html: '<span class="sos-map-focus relative grid h-7 w-7 place-items-center"><span class="absolute inset-0 rounded-full bg-[#E7A93B]/25"></span><span class="h-3 w-3 rounded-full bg-[#E7A93B] ring-[2.5px] ring-white shadow-sm"></span></span>',
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    })
   }
 
   function liveIsActive() {
@@ -115,15 +133,21 @@
 
     const [lat, lng] = center
 
-    // Follow the user's position once it arrives; afterwards the map stays
-    // where the user left it (recenter is explicit).
-    if (!centeredOnOwn && own) {
+    // Follow the first known position; afterwards the map stays where the
+    // user left it (recenter is explicit).
+    if (!centered && (focusCoords || ownCoords)) {
       map.setView(center, 15)
-      centeredOnOwn = true
+      centered = true
     }
 
     if (markersLayer) markersLayer.remove()
     markersLayer = L.layerGroup().addTo(map)
+
+    if (focusCoords) {
+      L.marker(focusCoords, { icon: focusIcon(), keyboard: false, zIndexOffset: 1200 })
+        .addTo(markersLayer)
+        .bindTooltip('Nearby SOS', { direction: 'top', offset: [0, -14] })
+    }
 
     if (showRadius) {
       L.circle(center, {
@@ -138,9 +162,11 @@
       }).addTo(markersLayer)
     }
 
-    L.marker(center, { icon: youIcon(), keyboard: false, zIndexOffset: 1000 })
-      .addTo(markersLayer)
-      .bindTooltip('You', { direction: 'top', offset: [0, -12] })
+    if (ownCoords) {
+      L.marker(ownCoords, { icon: youIcon(), keyboard: false, zIndexOffset: 1000 })
+        .addTo(markersLayer)
+        .bindTooltip('You', { direction: 'top', offset: [0, -12] })
+    }
 
     responders.forEach((person, index) => {
       if (!validCoords(person.latitude, person.longitude)) return
@@ -201,7 +227,7 @@
 
   function recenter() {
     map?.setView(center, 15)
-    centeredOnOwn = true
+    centered = true
   }
 
   function toggleRadius() {
@@ -222,6 +248,7 @@
   ></div>
 
   <!-- map controls -->
+  {#if showControls}
   <div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
     <span
       class="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-ink shadow-sm ring-1 ring-black/5 backdrop-blur-md"
@@ -254,6 +281,7 @@
       </button>
     </div>
   </div>
+  {/if}
 
   {#if showFooter}
     <button

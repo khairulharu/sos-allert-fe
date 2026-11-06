@@ -11,15 +11,29 @@
   import AuthScreen from '$lib/components/AuthScreen.svelte'
   import { session, restoreSession, logout } from '$lib/stores.js'
   import { location as locationApi, sos as sosApi } from '$lib/api.js'
-  import { tracking, startTracking, stopTracking } from '$lib/tracking.js'
+  import {
+    tracking,
+    responderTracking,
+    startTracking,
+    stopTracking,
+    startResponderTracking,
+    stopResponderTracking,
+  } from '$lib/tracking.js'
+  import { formatDistance, formatEta } from '$lib/alertMeta.js'
 
   let tab = $state('home')
   let sosOpen = $state(false)
   let incomingOpen = $state(false)
-  let showIncoming = $state(false)
+  let pendingAlert = $state(null)
+  let responding = $state(false)
+  let respondError = $state('')
   let toast = $state('')
   let toastTimer
   let scrollEl = $state(null)
+  let inboxTimer
+  let inboxPolling = false
+  let inboxInitialised = false
+  const dismissedAlerts = new Set()
 
   // Session gate: authenticated state.
   let authed = $state(false)
@@ -32,6 +46,7 @@
       currentUser = restored
       startLocationHeartbeat()
       syncActiveTracking()
+      startInboxPolling()
     }
   })
 
@@ -65,6 +80,39 @@
     liveTrack = value
   })
 
+  // Responder-side stream for an alert this user answered.
+  let responderTrack = $state({ alertId: null, status: null, connection: 'idle' })
+  let responderTrackedId = null
+  let responderTrackedStatus = null
+
+  responderTracking.subscribe((value) => {
+    const sameAlert = value.alertId && value.alertId === responderTrackedId
+    if (
+      sameAlert &&
+      value.status &&
+      value.status !== responderTrackedStatus &&
+      TERMINAL.has(value.status)
+    ) {
+      notify(
+        value.status === 'RESOLVED'
+          ? 'The nearby SOS was resolved.'
+          : value.status === 'CANCELLED'
+            ? 'The nearby SOS was cancelled.'
+            : 'The nearby SOS expired.',
+      )
+    }
+    if (value.alertId !== responderTrackedId) responderTrackedStatus = null
+    if (value.status) responderTrackedStatus = value.status
+    responderTrackedId = value.alertId
+    responderTrack = value
+  })
+
+  // Prefer the user's own active alert; otherwise show the victim they
+  // are responding to.
+  const mapLive = $derived(
+    liveTrack.alertId && !TERMINAL.has(liveTrack.status) ? liveTrack : responderTrack,
+  )
+
   // Cold start / login: resume tracking for an active alert owned by this user.
   async function syncActiveTracking() {
     try {
@@ -85,6 +133,175 @@
 
   function handleTrack(alertId, seed) {
     startTracking(alertId, seed)
+  }
+
+  // ---- incoming responder alerts (inbox polling) ----
+  const INBOX_POLL_MS = 12000
+
+  async function pollInbox() {
+    if (inboxPolling || !currentUser) return
+    inboxPolling = true
+    try {
+      const data = await sosApi.inbox()
+      const list = Array.isArray(data) ? data : []
+      const me = currentUser?.id
+      const active = list
+        .filter(
+          (alert) =>
+            alert?.alert_id &&
+            (alert.status === 'TRIGGERED' || alert.status === 'ACKNOWLEDGED'),
+        )
+        .filter((alert) => (alert.sender?.id || alert.sender_id) !== me)
+        .sort(
+          (a, b) => (Number(b.triggered_at) || 0) - (Number(a.triggered_at) || 0),
+        )
+
+      // `masked !== true` means the caller is already a participant
+      // (sender is filtered above), so don't offer it as a new incoming alert.
+      const visible = active.filter(
+        (alert) => alert.masked === true && !dismissedAlerts.has(alert.alert_id),
+      )
+      const newest = visible[0] || null
+      const current =
+        (pendingAlert && visible.find((alert) => alert.alert_id === pendingAlert.alert_id)) ||
+        null
+
+      if (incomingOpen && current) {
+        // Keep the sheet stable while the user is reading it.
+        pendingAlert = current
+      } else {
+        const changed = newest?.alert_id !== pendingAlert?.alert_id
+        pendingAlert = newest
+        if (!newest) {
+          incomingOpen = false
+          respondError = ''
+        } else if (changed && !incomingOpen && !sosOpen && inboxInitialised) {
+          incomingOpen = true
+          respondError = ''
+        }
+      }
+      inboxInitialised = true
+
+      // Resume a read-only stream for an alert we already responded to.
+      if (!responderTrack.alertId || TERMINAL.has(responderTrack.status)) {
+        const participated = active.find((alert) => alert.masked !== true)
+        if (participated) {
+          const loc = participated.latest_location || participated.initial_location || {}
+          startResponderTracking(participated.alert_id, {
+            status: participated.status,
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+            updatedAt: loc.updated_at ?? participated.triggered_at ?? null,
+          })
+        }
+      }
+    } catch (err) {
+      if (err?.status === 401) onSessionExpired()
+    } finally {
+      inboxPolling = false
+    }
+  }
+
+  function startInboxPolling() {
+    if (inboxTimer) return
+    pollInbox()
+    inboxTimer = setInterval(() => {
+      if (!document.hidden) pollInbox()
+    }, INBOX_POLL_MS)
+  }
+
+  function stopInboxPolling() {
+    clearInterval(inboxTimer)
+    inboxTimer = null
+    inboxPolling = false
+    inboxInitialised = false
+    pendingAlert = null
+    incomingOpen = false
+    respondError = ''
+    responding = false
+    dismissedAlerts.clear()
+    stopResponderTracking()
+  }
+
+  function dismissIncoming() {
+    if (pendingAlert?.alert_id) dismissedAlerts.add(pendingAlert.alert_id)
+    incomingOpen = false
+    pendingAlert = null
+    respondError = ''
+  }
+
+  function browserPosition() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null)
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 4000, maximumAge: 60000 },
+      )
+    })
+  }
+
+  async function responseCoords() {
+    const pos = await browserPosition()
+    if (pos) return pos
+    try {
+      const stored = await locationApi.get()
+      if (stored) return { lat: stored.latitude, lng: stored.longitude }
+    } catch {
+      /* fall through to the heartbeat fallback */
+    }
+    return { lat: lastCoord.lat, lng: lastCoord.lng }
+  }
+
+  async function respondToAlert() {
+    const alert = pendingAlert
+    if (!alert?.alert_id || responding) return
+    if (alert.masked !== true) {
+      dismissedAlerts.add(alert.alert_id)
+      dismissIncoming()
+      notify('You already responded to that alert.')
+      return
+    }
+    responding = true
+    respondError = ''
+    try {
+      const pos = await responseCoords()
+      const result = await sosApi.respond(alert.alert_id, pos.lat, pos.lng)
+
+      dismissedAlerts.add(alert.alert_id)
+      incomingOpen = false
+      pendingAlert = null
+
+      const eta = formatEta(Number(result?.eta_seconds))
+      const distance = formatDistance(Number(result?.victim_distance_meters))
+      notify(
+        ["You're on the way", eta ? `ETA ${eta}` : '', distance ? `${distance} away` : '']
+          .filter(Boolean)
+          .join(' · ') + '.',
+      )
+
+      const loc = alert.latest_location || alert.initial_location || {}
+      startResponderTracking(alert.alert_id, {
+        status: 'ACKNOWLEDGED',
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        updatedAt: Date.now(),
+      })
+    } catch (err) {
+      if (err?.status === 409) {
+        dismissedAlerts.add(alert.alert_id)
+        respondError = 'You already responded to this alert.'
+      } else if (err?.status === 404) {
+        dismissedAlerts.add(alert.alert_id)
+        incomingOpen = false
+        pendingAlert = null
+        notify('That alert is no longer available.')
+      } else {
+        respondError = err?.message || 'Could not send your response.'
+      }
+    } finally {
+      responding = false
+    }
   }
 
   // ---- geolocation + heartbeat ----
@@ -122,12 +339,6 @@
     requestAnimationFrame(() => scrollEl?.scrollTo({ top: 0, behavior: 'smooth' }))
   }
 
-  function respondToAlert() {
-    incomingOpen = false
-    showIncoming = false
-    notify("You're on the way. Location shared.")
-  }
-
   function onAuthSuccess() {
     const s = restoreSession()
     if (s) {
@@ -135,10 +346,12 @@
       currentUser = s
       startLocationHeartbeat()
       syncActiveTracking()
+      startInboxPolling()
     }
   }
 
   function onSignOut() {
+    stopInboxPolling()
     stopTracking()
     authed = false
     currentUser = null
@@ -146,6 +359,7 @@
   }
 
   async function onSessionExpired() {
+    stopInboxPolling()
     stopTracking()
     await logout()
   }
@@ -178,12 +392,12 @@
                 user={currentUser}
                 onnavigate={navigate}
                 onnotify={notify}
-                showIncoming={showIncoming}
+                incoming={pendingAlert}
                 onviewalert={() => (incomingOpen = true)}
-                ondismissincoming={() => (showIncoming = false)}
+                ondismissincoming={dismissIncoming}
                 onsignout={onSignOut}
                 coords={lastCoord}
-                live={liveTrack}
+                live={mapLive}
                 onsessionexpired={onSessionExpired}
               />
             {:else if tab === 'alerts'}
@@ -216,8 +430,15 @@
         </div>
       {/if}
 
-      {#if incomingOpen}
-        <AlertIncoming onclose={() => (incomingOpen = false)} onrespond={respondToAlert} />
+      {#if incomingOpen && pendingAlert}
+        <AlertIncoming
+          alert={pendingAlert}
+          own={lastCoord}
+          busy={responding}
+          error={respondError}
+          onclose={dismissIncoming}
+          onrespond={respondToAlert}
+        />
       {/if}
 
       {#if sosOpen}

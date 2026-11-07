@@ -268,10 +268,15 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   ("Sending without audio", `MIC_HELP` copy) and the SOS still goes out. The
   triage card starts as "from your description" — or "from your audio" as soon
   as the classify response lands — then `applyTriage()` takes over from the media
-  response or an `ALERT_TRIAGE` frame; it shows the transcript, the
-  transcription note (`disabled`/`too_large`/`empty`/`failed`) and, when the
-  media response escalated the fan-out, "+N responders at the wider radius" with
-  the notified count including them.
+  response or an `ALERT_TRIAGE` frame; it shows a type icon (the raw enum used to
+  be printed inside a 36px badge, where it overflowed as a second copy of the
+  label), the type label, the server's summary when it sends one, the transcript
+  of the clip, and the transcription note (`disabled`/`too_large`/`empty`/
+  `failed`, hidden once the level really came from the audio). When the media
+  response escalated the fan-out it also adds "+N responders at the wider radius"
+  and the notified count includes them. The sender's only view of who is coming
+  is a 10 s poll of `GET /api/sos/:alertId` for `responders_en_route`, shown as
+  "N responders on the way" next to the notified count.
   Ending an active alert takes two taps — "I'm safe — end alert" arms
   `confirming`, the second tap sends `POST /resolve` — so a stray tap cannot
   stop a live alert. Starts tracking via `ontrack`, sends throttled breadcrumbs
@@ -488,6 +493,12 @@ SOS shows a real OS notification even while the tab is in the background.
   backend widens the radius and notifies only the new responders, and the media
   response reports `escalated`/`recipients_added`. Pending backend items: native
   push/SMS credentials and Redis GEO TTL/cleanup.
+- The sender cannot see *who* is coming: the API exposes `responders_en_route`
+  (a count) on `AlertDetailResponse` and nothing else — no responder names,
+  distances or ETA, and no WS frame for them (`POST /respond` returns the ETA to
+  the responder only). The active screen therefore polls the count every 10 s and
+  says "N responders on the way"; a responder list (or a `RESPONDER_ADDED` frame
+  with name + distance/ETA) is a backend addition.
 - One active session per account: the backend stores the token on the user row
   (`users.token`), so logging in anywhere rotates it and revokes whatever session
   the account had before — a second device, a second browser profile, the

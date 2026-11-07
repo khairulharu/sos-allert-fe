@@ -28,9 +28,12 @@
   } = $props()
 
   // ---- phases: 'describe' | 'count' | 'sending' | 'active' | 'ended' | 'error' ----
+  // The countdown is also the audio-capture window, so it is measured in seconds
+  // of speech the backend gets to classify.
+  const total = 10
   let phase = $state('describe')
   let description = $state('')
-  let countdown = $state(5)
+  let countdown = $state(total)
   let elapsed = $state(0)
   let acknowledged = $state(false)
   let confirming = $state(false)
@@ -43,10 +46,19 @@
   let mediaSeconds = $state(MAX_MEDIA_SECONDS)
   let mediaError = $state('')
   let mediaUploads = $state(0)
+  // Countdown capture, kept apart from the manual evidence recorder so the SOS
+  // screen can say whether the classification is getting audio.
+  let captureState = $state('idle') // idle | starting | recording | blocked | failed
+  let captureError = $state('')
+  let capturePromise = null
+  let transcript = $state('')
+  let transcriptionStatus = $state('')
+  let triageFromAudio = $state(false)
   let mediaRecorder = null
   let mediaStream = null
   let mediaTimer = null
   let mediaChunks = []
+  let clipWaiter = null
   let destroyed = false
 
   // Permission state, so the SOS screen can explain a blocked microphone
@@ -83,7 +95,6 @@
 
   // Severity display config.
   const RING = 2 * Math.PI * 44
-  const total = 5
   const TRIAGE_LABELS = { MEDICAL: 'Medical emergency', ACCIDENT: 'Accident', DANGER: 'Threat / danger' }
   const TRIAGE_COLORS = { MEDICAL: 'text-[#FFB3B3]', ACCIDENT: 'text-[#FFD580]', DANGER: 'text-[#FF8080]' }
   const TRIAGE_BG = { MEDICAL: 'from-[#FF4A3F] via-[#CC2019] to-[#991510]', ACCIDENT: 'from-[#FF8C00] via-[#CC6600] to-[#994400]', DANGER: 'from-[#B81710] via-[#99100A] to-[#6B0A06]' }
@@ -96,7 +107,33 @@
   function sevColor(s) { return s >= 0.67 ? 'text-[#FF8080]' : s >= 0.34 ? 'text-[#FFD580]' : 'text-[#A8E6CF]' }
   function sevBar(s) { return `w-[${Math.round(s * 100)}%]` }
 
+  // The backend re-classifies from the audio transcript: the media upload
+  // answers with `triage` and the tracking socket broadcasts ALERT_TRIAGE.
+  // Both land here, so the card, the severity bar and the radius copy all
+  // follow the newest classification.
+  function applyTriage(next, fromAudio = false) {
+    if (!next) return
+    const severity = Number.isFinite(next.severity) ? next.severity : triageResult?.severity
+    triageResult = {
+      emergency_type: next.emergency_type || triageResult?.emergency_type || 'DANGER',
+      severity: Number.isFinite(severity) ? severity : 0.5,
+      summary: next.summary || triageResult?.summary || '',
+    }
+    if (fromAudio) triageFromAudio = true
+  }
+
+  const TRANSCRIPTION_NOTES = {
+    disabled: 'Transcription is off on the server, so the classification stays on your description.',
+    too_large: 'The audio was too large to transcribe.',
+    empty: 'No speech was recognized in the audio.',
+    failed: 'Transcription failed — the description classification stands.',
+  }
+  const triageSourceLabel = $derived(
+    triageFromAudio ? 'from your audio' : 'from your description',
+  )
+
   async function doTrigger() {
+    if (destroyed) return
     // Real API call. Let navigator location override prop coords if available.
     const pos = await new Promise((res) => {
       if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
@@ -131,7 +168,7 @@
     alertId = result.alert_id
     recipientsNotified = result.recipients_notified || 0
     triggeredAt = result.triggered_at ? new Date(result.triggered_at) : null
-    triageResult = result.triage || null
+    applyTriage(result.triage)
     ontrack?.(result.alert_id, {
       status: result.status,
       latitude: pos.lat,
@@ -139,6 +176,15 @@
       updatedAt: result.triggered_at,
     })
     phase = 'active'
+
+    // The clip recorded during the countdown can only be uploaded now: the
+    // media endpoint hangs off the alert. It transcribes and re-classifies, so
+    // the card starts on the description and follows the audio when it lands.
+    if (capturePromise) {
+      const clip = await capturePromise
+      capturePromise = null
+      if (clip && !destroyed) uploadClip(clip.blob, clip.extension)
+    }
   }
 
   async function doResolve() {
@@ -163,7 +209,10 @@
     doResolve()
   }
 
-  // ---- audio evidence recording ----
+  // ---- audio ----
+  // The countdown records one clip the backend transcribes and classifies; the
+  // active screen can add evidence clips on top of it. Both paths share the
+  // recorder helpers below.
   function pickAudioMime() {
     if (typeof MediaRecorder === 'undefined') return ''
     const candidates = [
@@ -184,6 +233,8 @@
     mediaStream = null
   }
 
+  // Drops whatever is being recorded and releases the microphone. A caller
+  // waiting for a clip is answered with null, never left hanging.
   function cleanupMedia() {
     clearInterval(mediaTimer)
     mediaTimer = null
@@ -199,8 +250,71 @@
     }
     stopTracks()
     mediaChunks = []
+    clipWaiter?.(null)
+    clipWaiter = null
   }
 
+  // Opens the microphone and starts a 250 ms-chunk recorder. The caller decides
+  // what the clip is for by what it does when the recorder stops.
+  async function openRecorder() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    mediaStream = stream
+    const mimeType = pickAudioMime()
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+    mediaRecorder = recorder
+    mediaChunks = []
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size) mediaChunks.push(event.data)
+    }
+    recorder.onstop = () => finalizeRecording(recorder)
+    recorder.start(250)
+    return recorder
+  }
+
+  // ---- countdown capture: the SOS window doubles as the audio window ----
+  async function startCapture() {
+    if (captureState === 'starting' || captureState === 'recording') return
+    const blocked = micBlockReason()
+    if (blocked) {
+      captureState = 'blocked'
+      captureError = MIC_HELP[blocked]
+      return
+    }
+    captureState = 'starting'
+    captureError = ''
+    try {
+      await openRecorder()
+      if (destroyed || phase !== 'count') {
+        // Cancelled or moved on while the device was opening.
+        cleanupMedia()
+        captureState = 'idle'
+        return
+      }
+      captureState = 'recording'
+    } catch (err) {
+      cleanupMedia()
+      captureState = 'failed'
+      captureError = micErrorText(err)
+    }
+  }
+
+  // Stops the countdown recorder and resolves with the assembled clip, or null
+  // when there is nothing to send (blocked microphone, cancel, empty audio).
+  function stopCapture() {
+    if (!mediaRecorder) return Promise.resolve(null)
+    const pending = new Promise((resolve) => {
+      clipWaiter = resolve
+    })
+    try {
+      if (mediaRecorder.state !== 'inactive') mediaRecorder.stop()
+      else cleanupMedia()
+    } catch {
+      cleanupMedia()
+    }
+    return pending
+  }
+
+  // ---- manual evidence clip on the active screen ----
   async function startRecording() {
     if (
       !alertId ||
@@ -221,24 +335,12 @@
     mediaError = ''
     mediaState = 'starting'
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      await openRecorder()
       if (destroyed || phase !== 'active') {
-        stream.getTracks().forEach((track) => track.stop())
+        cleanupMedia()
         mediaState = 'idle'
         return
       }
-      mediaStream = stream
-      const mimeType = pickAudioMime()
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
-      mediaRecorder = recorder
-      mediaChunks = []
-
-      recorder.ondataavailable = (event) => {
-        if (event.data?.size) mediaChunks.push(event.data)
-      }
-      recorder.onstop = () => finalizeRecording(recorder)
-
-      recorder.start(250)
       mediaState = 'recording'
       mediaSeconds = MAX_MEDIA_SECONDS
       clearInterval(mediaTimer)
@@ -271,27 +373,59 @@
     mediaTimer = null
     mediaRecorder = null
     stopTracks()
+    if (captureState === 'recording' || captureState === 'starting') captureState = 'idle'
 
     const chunks = mediaChunks
     mediaChunks = []
     const type = recorder.mimeType || chunks[0]?.type || 'audio/webm'
     const blob = new Blob(chunks, { type })
+    const extension = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm'
 
-    if (destroyed) return
-    if (!blob.size) {
-      mediaState = 'error'
-      mediaError = 'No audio was captured. Try again.'
+    const waiter = clipWaiter
+    clipWaiter = null
+
+    if (destroyed) {
+      waiter?.(null)
       return
     }
+    if (!blob.size) {
+      if (waiter) {
+        waiter(null)
+        captureState = 'failed'
+        captureError = 'No audio was captured.'
+      } else {
+        mediaState = 'error'
+        mediaError = 'No audio was captured. Try again.'
+      }
+      return
+    }
+    // Countdown clip: there is no alert to attach it to yet, so the waiter in
+    // doTrigger takes it and uploads once the trigger answered with an id.
+    if (waiter) {
+      waiter({ blob, extension })
+      return
+    }
+    await uploadClip(blob, extension)
+  }
 
-    const extension = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm'
+  // Uploads one clip. The response carries the transcript and the triage the
+  // backend derived from it, so the active screen can move off the
+  // description-based classification.
+  async function uploadClip(blob, extension) {
     mediaState = 'uploading'
     mediaError = ''
     try {
-      await sosApi.uploadMedia(alertId, blob, `sos-${alertId}-${Date.now()}.${extension}`)
+      const result = await sosApi.uploadMedia(
+        alertId,
+        blob,
+        `sos-${alertId}-${Date.now()}.${extension}`,
+      )
       if (destroyed) return
       mediaUploads += 1
       mediaState = 'uploaded'
+      if (result?.transcript) transcript = result.transcript
+      transcriptionStatus = result?.transcription_status || ''
+      applyTriage(result?.triage, true)
     } catch (err) {
       if (destroyed) return
       mediaState = 'error'
@@ -307,12 +441,26 @@
     cleanupMedia()
   })
 
+  // Recording only makes sense on the countdown or the active screen; a cancel,
+  // a failed trigger or the end of the alert drops the clip and the microphone.
   $effect(() => {
-    if (phase !== 'active' && (mediaState === 'recording' || mediaState === 'starting')) {
-      cleanupMedia()
+    if (phase === 'count' || phase === 'sending' || phase === 'active') return
+    const manual = mediaState === 'recording' || mediaState === 'starting'
+    const capture = captureState === 'recording' || captureState === 'starting'
+    if (!manual && !capture) return
+    cleanupMedia()
+    if (manual) {
       mediaState = 'idle'
       mediaSeconds = MAX_MEDIA_SECONDS
     }
+    if (capture) captureState = 'idle'
+  })
+
+  // A later transcription can raise or lower the severity; ALERT_TRIAGE arrives
+  // on the tracking socket and re-labels the card while the alert is open.
+  $effect(() => {
+    const update = live?.triage
+    if (update) applyTriage(update, true)
   })
 
   function startCountdown() {
@@ -321,16 +469,19 @@
     errorMsg = ''
     phase = 'count'
     countdown = total
+    // Opens the microphone straight away: `total` seconds of audio is what the
+    // backend classifies, so a slow permission prompt eats into the window.
+    startCapture()
   }
 
   // ---- timers ----
   let timerId
-  // The 5 s countdown is the user's cancel window: the alert is only POSTed
-  // once it runs out, so "Cancel alert" stays a real local abort for the whole
-  // window (no request in flight, nothing to undo on the backend). The deadline
-  // is absolute and re-checked on visibilitychange because a backgrounded tab
-  // throttles timers — switching to the dialer mid-countdown must not swallow
-  // the SOS.
+  // The countdown is the user's cancel window *and* the audio-capture window:
+  // the alert is only POSTed once it runs out, so "Cancel alert" stays a real
+  // local abort for the whole time (no request in flight, nothing to undo on the
+  // backend) and the clip can be thrown away with it. The deadline is absolute
+  // and re-checked on visibilitychange because a backgrounded tab throttles
+  // timers — switching to the dialer mid-countdown must not swallow the SOS.
   $effect(() => {
     if (phase !== 'count') return
     const deadline = Date.now() + total * 1000
@@ -343,6 +494,7 @@
       fired = true
       clearInterval(timerId)
       timerId = null
+      capturePromise = stopCapture()
       phase = 'sending'
       doTrigger()
     }
@@ -479,7 +631,7 @@
       <!-- Severity preview hint -->
       <div class="mt-3 flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-[11px] text-white/60">
         <span class="h-1.5 w-1.5 rounded-full bg-[#FFD580]"></span>
-        AI classifies description → sets responder radius & priority
+        The next 10 s are recorded, then classified by AI
       </div>
     </div>
 
@@ -491,7 +643,9 @@
       >
         Continue → Send SOS
       </button>
-      <p class="text-center text-[10.5px] text-white/60">You'll have 5 seconds to cancel after starting.</p>
+      <p class="text-center text-[10.5px] text-white/60">
+        10 seconds of audio for AI triage — cancel before it ends to send nothing.
+      </p>
     </div>
   </div>
 
@@ -537,9 +691,42 @@
           </div>
         </div>
         <h2 class="mt-7 text-center text-[22px] font-semibold tracking-[-0.02em]">Sending SOS in {countdown}</h2>
-        <p class="mt-2 max-w-[270px] text-center text-[12.5px] leading-relaxed text-white/70">
-          AI is classifying your alert and finding nearby responders…
+        <p class="mt-2 max-w-[280px] text-center text-[12.5px] leading-relaxed text-white/70">
+          {#if captureState === 'recording'}
+            Recording audio — the AI classifies it and alerts the nearest responders when the countdown ends.
+          {:else if captureState === 'starting'}
+            Opening the microphone before the SOS goes out…
+          {:else}
+            The AI classifies your alert and alerts the nearest responders when the countdown ends.
+          {/if}
         </p>
+
+        <div
+          class="mt-5 flex max-w-[300px] items-center gap-2 rounded-full px-3.5 py-2 text-[11px] font-medium ring-1 backdrop-blur {captureState ===
+          'recording'
+            ? 'bg-white/20 text-white ring-white/25'
+            : 'bg-white/10 text-white/70 ring-white/15'}"
+        >
+          {#if captureState === 'recording'}
+            <span class="relative flex h-2 w-2">
+              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-70"></span>
+              <span class="relative inline-flex h-2 w-2 rounded-full bg-sos"></span>
+            </span>
+            <Mic size={12} />
+            Audio evidence recording · {countdown}s left
+          {:else if captureState === 'starting'}
+            <Loader2 size={12} class="animate-spin" />
+            Starting microphone…
+          {:else}
+            <Mic size={12} />
+            Sending without audio
+          {/if}
+        </div>
+        {#if captureError}
+          <p class="mt-2 max-w-[300px] text-center text-[10px] leading-snug text-white/70">
+            {captureError}
+          </p>
+        {/if}
       </div>
       <div class="space-y-2.5">
         <button type="button" onclick={stop}
@@ -558,7 +745,7 @@
           </span>
         </div>
         <h2 class="mt-8 text-center text-[22px] font-semibold tracking-[-0.02em]">AI analyzing & alerting responders</h2>
-        <p class="mt-2 text-center text-[12.5px] text-white/70">Processing description · dispatching nearby responders…</p>
+        <p class="mt-2 text-center text-[12.5px] text-white/70">Sending your alert · the recorded audio goes to the AI triage engine…</p>
         <div class="mt-6 flex items-center gap-1.5">
           {#each [0, 1, 2] as dot}
             <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-white/80" style="animation-delay: {dot * 150}ms"></span>
@@ -614,7 +801,7 @@
           <div class="flex items-center justify-between gap-2 bg-white/[0.05] px-3.5 py-2.5">
             <span class="inline-flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-white/50">
               <Radio size={11} class="text-[#6EE7B7]" />
-              AI Triage · on-device & cloud classification
+              AI triage · {triageSourceLabel}
             </span>
             <span
               class="text-[9.5px] font-semibold {liveConnection === 'open'
@@ -655,6 +842,28 @@
                 {/if}
               </p>
             </div>
+
+            {#if mediaState === 'uploading' && !triageFromAudio}
+              <p class="mt-3 flex items-center gap-1.5 text-[9.5px] text-white/45">
+                <Loader2 size={11} class="animate-spin" />
+                Reading the recorded audio…
+              </p>
+            {/if}
+
+            {#if transcript}
+              <div class="mt-3 rounded-xl bg-white/[0.06] px-2.5 py-2">
+                <p class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">
+                  Audio transcript
+                </p>
+                <p class="mt-1 text-[10.5px] italic leading-snug text-white/70">“{transcript}”</p>
+              </div>
+            {/if}
+
+            {#if transcriptionStatus && transcriptionStatus !== 'completed'}
+              <p class="mt-2 text-[9.5px] leading-snug text-white/40">
+                {TRANSCRIPTION_NOTES[transcriptionStatus] || ''}
+              </p>
+            {/if}
           </div>
         </div>
       {/if}

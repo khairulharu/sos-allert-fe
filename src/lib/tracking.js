@@ -1,8 +1,8 @@
 // Live SOS tracking over the backend WebSocket:
 //   WS /ws/sos/:alertId/track?token=<raw session token>
 //
-// The server broadcasts LOCATION_UPDATE and ALERT_STATUS to the sender and
-// confirmed responders. Only the sender may send breadcrumb frames.
+// The server broadcasts LOCATION_UPDATE, ALERT_STATUS and ALERT_TRIAGE to the
+// sender and confirmed responders. Only the sender may send breadcrumb frames.
 // Sender and responder connections are independent channels so a responder
 // can track someone else while their own alert is active.
 import { writable } from 'svelte/store'
@@ -24,6 +24,9 @@ const EMPTY = {
   speedMps: null,
   headingDeg: null,
   updatedAt: null,
+  // Latest AI classification of this alert, when the backend re-derives one
+  // from the audio transcript (ALERT_TRIAGE).
+  triage: null,
   connection: 'idle', // idle | connecting | open | reconnecting | closed | error
   lastError: '',
 }
@@ -103,6 +106,18 @@ function createChannel() {
           updatedAt: Date.now(),
         })
       }
+      return
+    }
+
+    if (message?.type === 'ALERT_TRIAGE') {
+      patch({
+        triage: {
+          emergency_type: message.emergency_type ?? null,
+          severity: Number.isFinite(message.severity) ? message.severity : null,
+          summary: message.summary ?? null,
+        },
+        updatedAt: Number.isFinite(message.updated_at) ? message.updated_at : Date.now(),
+      })
       return
     }
 

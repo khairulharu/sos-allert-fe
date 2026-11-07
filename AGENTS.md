@@ -62,9 +62,17 @@ refused by preflight until they are added to the `AllowOrigins` list in
   `ALERT_STATUS`), HTTP 429 handling (auth cooldown/countdown, SOS limit
   screen), real incoming responder alerts (`GET /api/sos/inbox` polled every
   12 s, real sheet/banner, `POST /respond`, then responder WS stream),
-  10 s audio evidence via `MediaRecorder` + multipart upload. The backend now
-  transcribes audio (≤ 25 MB) and returns `transcript`, `transcription_status`,
-  and updated `triage`; the UI does not display those fields yet. **Browser Web
+  10 s audio evidence via `MediaRecorder` + multipart upload. **The SOS
+  countdown is the audio window**: the 10 s between "Continue → Send SOS" and
+  the trigger are recorded, and the clip is uploaded to
+  `POST /api/sos/:alertId/media` as soon as the trigger answers with an
+  `alert_id`. The backend transcribes audio (≤ 25 MB) and returns `transcript`,
+  `transcription_status`, and an updated `triage`; the active screen shows the
+  transcript and follows that classification (`ALERT_TRIAGE` over the tracking
+  socket does the same when the re-classification happens later), so the card
+  starts as "from your description" and switches to "from your audio". A blocked
+  microphone does not stop the SOS — the countdown says "Sending without audio"
+  and the description-based triage stands. **Browser Web
   Push is wired**: the Profile toggle registers `/sw.js` + a VAPID subscription
   with `POST /api/push/subscriptions`, `App.svelte` re-syncs it on
   restore/login and drops it on sign-out/session-expired, and a nearby SOS
@@ -81,8 +89,10 @@ refused by preflight until they are added to the `AllowOrigins` list in
     backend needs a `safe_pin` the app never sets, so `PATCH /api/users/_current`
     (Profile) has to come first; today the only way to close an alert is
     `resolve` (`RESOLVED`);
-  - handling the new `ALERT_TRIAGE` WebSocket frame and showing the updated
-    classification/transcript in the active alert and responder sheet;
+  - the responder sheet still shows the classification from the inbox payload:
+    `ALERT_TRIAGE` reaches the responder channel, but `AlertIncoming` is not
+    given the tracking store, so a re-classification after the alert was opened
+    does not update it (the sender's active alert does follow it);
   - video capture and in-app playback/download of media;
   - native push device tokens (FCM/APNs via `fcm_token`/`apns_token`) — browser
     Web Push covers the browser demo, and inbox polling stays as the in-app
@@ -140,8 +150,9 @@ refused by preflight until they are added to the `AllowOrigins` list in
   Sender: `tracking`, `startTracking(alertId, seed)`, `stopTracking()`,
   `sendBreadcrumb(fields)`. Responder (read-only): `responderTracking`,
   `startResponderTracking(alertId, seed)`, `stopResponderTracking()`.
-  **Pending:** handle the new `ALERT_TRIAGE` frame (emergency_type, severity,
-  summary) published after audio transcription.
+  The store also carries `triage` (`{emergency_type, severity, summary}`), set
+  by the `ALERT_TRIAGE` frame the backend broadcasts after it re-classifies an
+  alert from the transcribed audio.
 - `src/lib/alertMeta.js` — `emergencyLabel`, `initialsFor`, `timeAgo`,
   `formatDistance`, `formatEta`, and `distanceMeters` (haversine) shared by the
   incoming sheet and Home banner.
@@ -197,22 +208,34 @@ refused by preflight until they are added to the `AllowOrigins` list in
 - `src/lib/components/AlertIncoming.svelte` — real inbox alert sheet. Receives
   one `AlertDetailResponse`, computes approximate distance from own coords to
   the masked location, and calls the app's respond handler. No demo copy.
-- `src/lib/components/AlertFlow.svelte` — describe → 5 s countdown → trigger →
-  triage → resolve. The countdown *is* the cancel window: the alert is only
-  POSTed when it runs out, so "Cancel alert" and the header X abort locally
-  with nothing to undo (they render only while `phase === 'count'`; `'sending'`
-  is the in-flight spinner and offers no cancel). Ending an active alert takes
-  two taps — "I'm safe — end alert" arms `confirming`, the second tap sends
-  `POST /resolve` — so a stray tap cannot stop a live alert. Starts tracking via
-  `ontrack`, sends throttled breadcrumbs while active, shows the WS connection
-  state, and ends on terminal `ALERT_STATUS`. Active view also owns audio
-  evidence: `getUserMedia` + `MediaRecorder`, 10 s auto-stop, explicit stop,
-  mime fallback (webm/opus → webm → mp4 → ogg), multipart upload, and cleanup
-  on unmount or terminal status. The upload response now includes `transcript`,
-  `transcription_status`, and `triage`; surface them in the active view when
-  the STT backend is enabled. The audio section also reports the permission
-  state before the user taps record: denied → how to re-allow the microphone,
-  insecure origin → “needs a secure connection” (`$lib/mic.js`).
+- `src/lib/components/AlertFlow.svelte` — describe → 10 s countdown → trigger →
+  triage → resolve. The countdown is two things at once. It is the cancel
+  window: the alert is only POSTed when it runs out, so "Cancel alert" and the
+  header X abort locally with nothing to undo (they render only while
+  `phase === 'count'`; `'sending'` is the in-flight spinner and offers no
+  cancel). And it is the audio window: `startCapture()` opens the microphone as
+  the countdown starts (`captureState`, shown as "Audio evidence recording · Ns
+  left"), the recorder is stopped the moment the countdown ends, and the clip is
+  held until the trigger answers with an `alert_id` — then
+  `POST /api/sos/:id/media` uploads it, so the classification can come from
+  speech. A blocked or failing microphone only downgrades the UI ("Sending
+  without audio", `MIC_HELP` copy) and the SOS still goes out. The triage card
+  starts as "from your description", then `applyTriage()` takes over from the
+  upload response or from an `ALERT_TRIAGE` frame and the card becomes "from
+  your audio", showing the transcript and the transcription note
+  (`disabled`/`too_large`/`empty`/`failed`).
+  Ending an active alert takes two taps — "I'm safe — end alert" arms
+  `confirming`, the second tap sends `POST /resolve` — so a stray tap cannot
+  stop a live alert. Starts tracking via `ontrack`, sends throttled breadcrumbs
+  while active, shows the WS connection state, and ends on terminal
+  `ALERT_STATUS`. The active view also keeps a manual evidence recorder on top
+  of the automatic clip: `getUserMedia` + `MediaRecorder`, 10 s auto-stop,
+  explicit stop, mime fallback (webm/opus → webm → mp4 → ogg), multipart upload
+  through the same `uploadClip()`, and cleanup on unmount or terminal status
+  (an in-flight clip is dropped when the alert ends). The audio section also
+  reports the permission state before the user taps record: denied → how to
+  re-allow the microphone, insecure origin → “needs a secure connection”
+  (`$lib/mic.js`).
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
 - `src/lib/components/ProfileView.svelte` — profile + settings toggles. The
@@ -327,9 +350,15 @@ Whisper endpoint (default Groq `whisper-large-v3-turbo`, language `id`).
 }
 ```
 
-`src/lib/tracking.js` does not handle `ALERT_TRIAGE` yet — add it to the
-message switch and surface the new classification in the active alert and
-responder sheet.
+`src/lib/tracking.js` folds `ALERT_TRIAGE` into the `triage` field of the
+tracking store, and `AlertFlow` applies it to the triage card (header, severity
+bar and radius copy all follow it). The responder sheet does not read that field
+yet, so a responder watching an open alert still sees the inbox classification.
+
+Because the frontend uploads the clip only after `POST /api/sos` answered, the
+first fan-out still happens on the description-based classification: raising the
+severity from the audio does not re-notify a wider radius (a pending backend
+item), it only updates the alert, the socket frame and the sending screen.
 
 ## Browser Web Push (implemented)
 

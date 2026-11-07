@@ -54,8 +54,8 @@ refused by preflight until they are added to the `AllowOrigins` list in
 ## Current frontend state
 
 - Live/wired: register/login/logout, current profile, location heartbeat,
-  SOS trigger + AI triage card + resolve, alerts (active + inbox), cancel
-  with Safe PIN, emergency contacts list/create, Leaflet/OSM responder map
+  SOS trigger + AI triage card + resolve, alerts (active + inbox), emergency
+  contacts list/create, Leaflet/OSM responder map
   (own heartbeat + `GET /api/location/nearby` polled every 15 s; masked pins
   and generic "Responder" rows, no names), sender-side WebSocket live tracking
   (`/ws/sos/:alertId/track?token=`; breadcrumbs every 5 s, live pin,
@@ -77,6 +77,10 @@ refused by preflight until they are added to the `AllowOrigins` list in
   are full-bleed (iOS applies its own mask); `public/favicon.svg` is the same
   artwork with the tile's 22/64 rounding.
 - Not wired yet:
+  - false-alarm cancel (`POST /api/sos/:alertId/cancel` → `CANCELLED`): the
+    backend needs a `safe_pin` the app never sets, so `PATCH /api/users/_current`
+    (Profile) has to come first; today the only way to close an alert is
+    `resolve` (`RESOLVED`);
   - handling the new `ALERT_TRIAGE` WebSocket frame and showing the updated
     classification/transcript in the active alert and responder sheet;
   - video capture and in-app playback/download of media;
@@ -194,12 +198,17 @@ refused by preflight until they are added to the `AllowOrigins` list in
   one `AlertDetailResponse`, computes approximate distance from own coords to
   the masked location, and calls the app's respond handler. No demo copy.
 - `src/lib/components/AlertFlow.svelte` — describe → 5 s countdown → trigger →
-  triage → resolve. Starts tracking via `ontrack`, sends throttled breadcrumbs
-  while active, shows the WS connection state, and ends on terminal
-  `ALERT_STATUS`. Active view also owns audio evidence: `getUserMedia` +
-  `MediaRecorder`, 10 s auto-stop, explicit stop, mime fallback
-  (webm/opus → webm → mp4 → ogg), multipart upload, and cleanup on unmount or
-  terminal status. The upload response now includes `transcript`,
+  triage → resolve. The countdown *is* the cancel window: the alert is only
+  POSTed when it runs out, so "Cancel alert" and the header X abort locally
+  with nothing to undo (they render only while `phase === 'count'`; `'sending'`
+  is the in-flight spinner and offers no cancel). Ending an active alert takes
+  two taps — "I'm safe — end alert" arms `confirming`, the second tap sends
+  `POST /resolve` — so a stray tap cannot stop a live alert. Starts tracking via
+  `ontrack`, sends throttled breadcrumbs while active, shows the WS connection
+  state, and ends on terminal `ALERT_STATUS`. Active view also owns audio
+  evidence: `getUserMedia` + `MediaRecorder`, 10 s auto-stop, explicit stop,
+  mime fallback (webm/opus → webm → mp4 → ogg), multipart upload, and cleanup
+  on unmount or terminal status. The upload response now includes `transcript`,
   `transcription_status`, and `triage`; surface them in the active view when
   the STT backend is enabled. The audio section also reports the permission
   state before the user taps record: denied → how to re-allow the microphone,

@@ -147,18 +147,6 @@
     phase = 'ended'
   }
 
-  async function doCancel(pin) {
-    if (!alertId || !pin || pin.length !== 4) return false
-    try {
-      await sosApi.cancel(alertId, pin, 'FALSE_ALARM')
-      phase = 'ended'
-      onnotify?.('Alert cancelled. No responders dispatched.')
-      return true
-    } catch (err) {
-      return false
-    }
-  }
-
   function stop() {
     onnotify?.('SOS cancelled. No alert was sent.')
     onclose?.()
@@ -333,22 +321,40 @@
     errorMsg = ''
     phase = 'count'
     countdown = total
-    setTimeout(() => (phase = 'sending'), 50)
-    doTrigger()
   }
 
   // ---- timers ----
   let timerId
+  // The 5 s countdown is the user's cancel window: the alert is only POSTed
+  // once it runs out, so "Cancel alert" stays a real local abort for the whole
+  // window (no request in flight, nothing to undo on the backend). The deadline
+  // is absolute and re-checked on visibilitychange because a backgrounded tab
+  // throttles timers — switching to the dialer mid-countdown must not swallow
+  // the SOS.
   $effect(() => {
-    if (phase === 'count') {
-      let rem = total
-      timerId = setInterval(() => {
-        rem -= 1
-        countdown = Math.max(rem, 0)
-        if (rem <= 0) clearInterval(timerId)
-      }, 1000)
+    if (phase !== 'count') return
+    const deadline = Date.now() + total * 1000
+    let fired = false
+    const tick = () => {
+      if (fired) return
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      countdown = remaining
+      if (remaining > 0) return
+      fired = true
+      clearInterval(timerId)
+      timerId = null
+      phase = 'sending'
+      doTrigger()
     }
-    return () => clearInterval(timerId)
+    timerId = setInterval(tick, 250)
+    const onVisible = () => {
+      if (!document.hidden) tick()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timerId)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   })
 
   $effect(() => {

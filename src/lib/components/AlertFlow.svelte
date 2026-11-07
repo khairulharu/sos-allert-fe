@@ -15,6 +15,7 @@
     Square,
   } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
+  import { MIC_HELP, micBlockReason, micErrorText, micPermissionState } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
 
@@ -47,6 +48,20 @@
   let mediaTimer = null
   let mediaChunks = []
   let destroyed = false
+
+  // Permission state, so the SOS screen can explain a blocked microphone
+  // before the user taps record — browsers only show that dialog once.
+  let micState = $state('unknown')
+  $effect(() => {
+    if (phase !== 'active') return
+    let cancelled = false
+    micPermissionState().then((state) => {
+      if (!cancelled) micState = state
+    })
+    return () => {
+      cancelled = true
+    }
+  })
 
   const liveStatus = $derived(live?.status || null)
   const liveConnection = $derived(live?.connection || 'idle')
@@ -208,9 +223,10 @@
     ) {
       return
     }
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    const blocked = micBlockReason()
+    if (blocked) {
       mediaState = 'error'
-      mediaError = 'Audio recording is not supported in this browser.'
+      mediaError = MIC_HELP[blocked]
       return
     }
 
@@ -245,10 +261,7 @@
     } catch (err) {
       cleanupMedia()
       mediaState = 'error'
-      mediaError =
-        err?.name === 'NotAllowedError' || err?.name === 'SecurityError'
-          ? 'Microphone permission was denied.'
-          : err?.message || 'Could not start recording.'
+      mediaError = micErrorText(err)
     }
   }
 
@@ -695,6 +708,12 @@
           </p>
         {:else if mediaError}
           <p class="mt-2 text-[9.5px] leading-snug text-[#FF8080]">{mediaError}</p>
+        {:else if micState === 'insecure'}
+          <p class="mt-2 text-[9.5px] leading-snug text-[#FFD580]">{MIC_HELP.insecure}</p>
+        {:else if micState === 'denied'}
+          <p class="mt-2 text-[9.5px] leading-snug text-[#FFD580]">{MIC_HELP.denied}</p>
+        {:else if micState === 'unsupported'}
+          <p class="mt-2 text-[9.5px] leading-snug text-[#FFD580]">{MIC_HELP.unsupported}</p>
         {:else}
           <p class="mt-2 text-[9.5px] leading-snug text-white/35">
             Records ambient audio from your microphone. You can stop early.

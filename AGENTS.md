@@ -73,6 +73,11 @@ cd ../backend && go run cmd/web/main.go
   bucketed to 3 decimals (~110 m), answers cached in localStorage for 7 days
   and deduped per bucket, so a wandering heartbeat does not re-ask the
   provider. `resolvePlace()` returns `"Kuta, Badung"`-style labels or `null`.
+- `src/lib/mic.js` — microphone permission, handled like the location prompt.
+  `micBlockReason()` answers first (`insecure` when `isSecureContext` is false,
+  where `navigator.mediaDevices` does not even exist, else `unsupported`), then
+  `micPermissionState()` / `requestMicAccess()` (grant-only: the stream is
+  stopped immediately) and `micErrorText()` for the copy shown in the SOS flow.
 - `src/lib/tracking.js` — two independent WebSocket channels sharing one
   connection implementation. Builds the WS URL (`VITE_WS_URL` or `ws(s)://`
   derived from `VITE_API_URL`), sends the raw token as `?token=`, reconnects
@@ -99,7 +104,9 @@ cd ../backend && go run cmd/web/main.go
   browser coords → stored heartbeat → fallback; success starts the responder
   WS channel and shows ETA/distance. Terminal statuses raise a toast.
   Fallback coords are Bali (`-8.65, 115.22`) if browser geolocation is denied;
-  heartbeat errors are currently swallowed.
+  heartbeat errors are currently swallowed. The microphone permission is primed
+  once per session (`primeMicrophone` → `$lib/mic.js`) next to the location
+  request, so a first-time browser dialog never lands mid-SOS.
 - `src/lib/components/HomeView.svelte` — protection card, responder count,
   quick actions. The pill under the greeting shows the reverse-geocoded
   heartbeat location (`Locating…` → `Kuta, Badung`, `Location unavailable` when
@@ -125,7 +132,9 @@ cd ../backend && go run cmd/web/main.go
   (webm/opus → webm → mp4 → ogg), multipart upload, and cleanup on unmount or
   terminal status. The upload response now includes `transcript`,
   `transcription_status`, and `triage`; surface them in the active view when
-  the STT backend is enabled.
+  the STT backend is enabled. The audio section also reports the permission
+  state before the user taps record: denied → how to re-allow the microphone,
+  insecure origin → “needs a secure connection” (`$lib/mic.js`).
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
 - `src/lib/components/ProfileView.svelte` — profile + settings toggles.

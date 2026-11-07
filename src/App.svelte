@@ -20,6 +20,7 @@
     stopResponderTracking,
   } from '$lib/tracking.js'
   import { formatDistance, formatEta } from '$lib/alertMeta.js'
+  import { micPermissionState, requestMicAccess } from '$lib/mic.js'
 
   let tab = $state('home')
   let sosOpen = $state(false)
@@ -45,6 +46,7 @@
       authed = true
       currentUser = restored
       startLocationHeartbeat()
+      primeMicrophone()
       syncActiveTracking()
       startInboxPolling()
     }
@@ -328,6 +330,17 @@
     heartbeatTimer = setInterval(send, 60000)
   }
 
+  // Microphone access is requested in the same breath as the location one, so
+  // a first-time browser dialog never lands in the middle of an SOS. Silent by
+  // design: a refusal is explained on the SOS screen, not as a toast.
+  let micPrimed = false
+  async function primeMicrophone() {
+    if (micPrimed) return
+    micPrimed = true
+    const state = await micPermissionState()
+    if (state === 'prompt' || state === 'unknown') await requestMicAccess()
+  }
+
   function notify(message) {
     toast = message
     clearTimeout(toastTimer)
@@ -345,6 +358,7 @@
       authed = true
       currentUser = s
       startLocationHeartbeat()
+      primeMicrophone()
       syncActiveTracking()
       startInboxPolling()
     }

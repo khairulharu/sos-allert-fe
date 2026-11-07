@@ -21,6 +21,7 @@
   import MapCard from './MapCard.svelte'
   import { MIC_HELP, micBlockReason, micErrorText, micPermissionState } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
+  import { initialsFor, formatDistance, formatEta, timeAgo } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
 
   let {
@@ -41,8 +42,9 @@
   let elapsed = $state(0)
   let acknowledged = $state(false)
   // How many responders the backend says are coming (`responders_en_route` on
-  // the alert detail). The API exposes no names or distances yet.
+  // the alert detail) and who they are (`responders`, participant-only).
   let respondersEnRoute = $state(0)
+  let respondersOnWay = $state([])
   let confirming = $state(false)
   let errorMsg = $state('')
   let rateLimited = $state(false)
@@ -169,8 +171,38 @@
   // Everyone the alert reached: the first fan-out plus the responders the
   // backend added when the audio raised the priority.
   const notifiedTotal = $derived(recipientsNotified + recipientsAdded)
-  // Either the detail poll or the ALERT_STATUS frame can vouch for a responder.
-  const respondedCount = $derived(Math.max(respondersEnRoute, acknowledged ? 1 : 0))
+  // The alert detail (polled) and the RESPONDER_ADDED frames carry the same
+  // shape; the stream is fresher, so it wins per responder. Nearest first.
+  const respondersList = $derived.by(() => {
+    const byId = new Map()
+    for (const person of respondersOnWay) {
+      if (person?.user_id) byId.set(person.user_id, person)
+    }
+    for (const person of live?.responders || []) {
+      if (person?.user_id) byId.set(person.user_id, person)
+    }
+    return [...byId.values()].sort(
+      (a, b) => (Number(a.distance_m) || 0) - (Number(b.distance_m) || 0),
+    )
+  })
+  // Either the list, the detail poll or the ALERT_STATUS frame can vouch for a
+  // responder; the list is empty for viewers who only get the bare count.
+  const respondedCount = $derived(
+    Math.max(respondersList.length, respondersEnRoute, acknowledged ? 1 : 0),
+  )
+  // "240 m away · ETA 3 min · 2 min ago". The backend records the distance and
+  // ETA at answer time, so they describe where the responder was when they set
+  // off, not where they are now.
+  function responderMeta(person) {
+    return [
+      Number.isFinite(person?.distance_m) ? `${formatDistance(person.distance_m)} away` : '',
+      person?.eta_seconds ? `ETA ${formatEta(person.eta_seconds)}` : '',
+      Number.isFinite(person?.responded_at) ? timeAgo(person.responded_at) : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+
   const responderStatusLabel = $derived(
     respondedCount > 0
       ? `${respondedCount} responder${respondedCount === 1 ? '' : 's'} on the way`
@@ -615,6 +647,8 @@
         if (Number.isFinite(detail.responders_en_route)) {
           respondersEnRoute = detail.responders_en_route
         }
+        // Participant-only: other viewers keep the bare count.
+        if (Array.isArray(detail.responders)) respondersOnWay = detail.responders
         if (detail.status === 'ACKNOWLEDGED') acknowledged = true
       } catch {
         /* the alert poll is best-effort; App owns the 401 handling */
@@ -1099,7 +1133,33 @@
         </span>
       </div>
 
-      {#if respondedCount > 0}
+      {#if respondersList.length}
+        <div
+          class="mt-2.5 divide-y divide-white/[0.07] overflow-hidden rounded-2xl bg-white/[0.05] ring-1 ring-white/[0.06]"
+        >
+          {#each respondersList as person (person.user_id)}
+            <div class="flex items-center gap-2.5 px-3.5 py-2.5">
+              <span
+                class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20 text-[9.5px] font-bold text-[#8FF0C6]"
+              >
+                {initialsFor(person.name || 'Responder')}
+              </span>
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-[11.5px] font-semibold text-white">
+                  {person.name || 'Responder'}
+                </p>
+                {#if responderMeta(person)}
+                  <p class="mt-0.5 truncate text-[10px] text-white/50">{responderMeta(person)}</p>
+                {/if}
+              </div>
+              <span
+                class="shrink-0 rounded-full bg-[#0BA36F]/15 px-2 py-1 text-[9px] font-semibold text-[#8FF0C6]"
+                >On the way</span
+              >
+            </div>
+          {/each}
+        </div>
+      {:else if respondedCount > 0}
         <div class="mt-2.5 flex items-start gap-2.5 rounded-2xl bg-[#0BA36F]/10 px-3.5 py-3 ring-1 ring-[#0BA36F]/20">
           <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20">
             <Navigation size={15} strokeWidth={2.4} class="text-[#6EE7B7]" />
@@ -1109,8 +1169,8 @@
               {respondedCount} {respondedCount === 1 ? 'responder is' : 'responders are'} on the way
             </p>
             <p class="mt-0.5 text-[10px] leading-snug text-[#8FF0C6]/70">
-              Stay where you are if it's safe. Their position and ETA are shared with them, not shown
-              here.
+              Stay where you are if it's safe. Names and distances are not part of this alert's
+              response.
             </p>
           </div>
         </div>

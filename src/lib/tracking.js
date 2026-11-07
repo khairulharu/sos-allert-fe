@@ -1,8 +1,9 @@
 // Live SOS tracking over the backend WebSocket:
 //   WS /ws/sos/:alertId/track?token=<raw session token>
 //
-// The server broadcasts LOCATION_UPDATE, ALERT_STATUS and ALERT_TRIAGE to the
-// sender and confirmed responders. Only the sender may send breadcrumb frames.
+// The server broadcasts LOCATION_UPDATE, ALERT_STATUS, ALERT_TRIAGE and
+// RESPONDER_ADDED to the sender and confirmed responders. Only the sender may
+// send breadcrumb frames.
 // Sender and responder connections are independent channels so a responder
 // can track someone else while their own alert is active.
 import { writable } from 'svelte/store'
@@ -27,6 +28,9 @@ const EMPTY = {
   // Latest AI classification of this alert, when the backend re-derives one
   // from the audio transcript (ALERT_TRIAGE).
   triage: null,
+  // Responders the backend reported as answering this alert (RESPONDER_ADDED).
+  // Appended in arrival order; the alert detail carries the same shape.
+  responders: [],
   connection: 'idle', // idle | connecting | open | reconnecting | closed | error
   lastError: '',
 }
@@ -121,6 +125,29 @@ function createChannel() {
           summary: message.summary ?? null,
         },
         updatedAt: Number.isFinite(message.updated_at) ? message.updated_at : Date.now(),
+      })
+      return
+    }
+
+    if (message?.type === 'RESPONDER_ADDED') {
+      const responderId = message.responder_id
+      if (!responderId) return
+      store.update((state) => {
+        if (state.responders.some((person) => person.user_id === responderId)) return state
+        return {
+          ...state,
+          responders: [
+            ...state.responders,
+            {
+              user_id: responderId,
+              name: message.name || '',
+              distance_m: Number.isFinite(message.distance_m) ? message.distance_m : null,
+              eta_seconds: Number.isFinite(message.eta_seconds) ? message.eta_seconds : null,
+              responded_at: Number.isFinite(message.responded_at) ? message.responded_at : null,
+            },
+          ],
+          updatedAt: Number.isFinite(message.responded_at) ? message.responded_at : Date.now(),
+        }
       })
       return
     }

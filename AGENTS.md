@@ -54,10 +54,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: the pre-trigger classify endpoint
-  (`POST /api/sos/classify`), the explicit `severity`/`summary` trigger fields,
-  and the media response's `escalated`/`recipients_added`, at backend commit
-  `2eca9b8`.
+  workspace. Last re-copy: the responder list (`AlertDetailResponse.responders`,
+  `ResponderSummary`) and the `RESPONDER_ADDED` frame, at backend commit
+  `6824363`.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.
@@ -178,8 +177,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `startResponderTracking(alertId, seed)`, `stopResponderTracking()`.
   The store also carries `triage` (`{emergency_type, severity, summary}`), set
   by the `ALERT_TRIAGE` frame the backend broadcasts after it re-classifies an
-  alert from the transcribed audio; frames whose `alert_id` does not match the
-  connected alert are ignored.
+  alert from the transcribed audio, and `responders` — appended from
+  `RESPONDER_ADDED` (`responder_id`, optional `name`, `distance_m`,
+  `eta_seconds`, `responded_at`), deduped per responder, so an open alert view
+  learns who is on the way without waiting for the next inbox poll. Frames whose
+  `alert_id` does not match the connected alert are ignored.
 - `src/lib/alertMeta.js` — `emergencyLabel`, `initialsFor`, `timeAgo`,
   `formatDistance`, `formatEta`, and `distanceMeters` (haversine) shared by the
   incoming sheet and Home banner.
@@ -283,9 +285,12 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   (168 px: the live pin from the tracking socket, the fan-out radius circle at
   the same tier the text claims, recenter and radius controls) because the sheet
   covers Home, which was the only map — a sender could not see the alert on any
-  map while it was open. The sender's only view of who is coming
-  is a 10 s poll of `GET /api/sos/:alertId` for `responders_en_route`, shown as
-  "N responders on the way" next to the notified count.
+  map while it was open. "Responders notified" renders the responders the backend
+  reports: `AlertDetailResponse.responders` polled every 10 s plus the
+  `RESPONDER_ADDED` frames merged in by `user_id`, nearest first, each row with
+  name (or "Responder" when the backend omits it), distance, ETA and when they
+  answered; when the payload only carries `responders_en_route` the row falls
+  back to a bare "N responders are on the way".
   Ending an active alert takes two taps — "I'm safe — end alert" arms
   `confirming`, the second tap sends `POST /resolve` — so a stray tap cannot
   stop a live alert. Starts tracking via `ontrack`, sends throttled breadcrumbs
@@ -510,12 +515,15 @@ SOS shows a real OS notification even while the tab is in the background.
   — never appears as a nearby pin, and an empty map is usually that rule rather
   than a rendering bug. Responder pins also share the masked ~100 m grid, so a
   pin can sit under the caller's own dot.
-- The sender cannot see *who* is coming: the API exposes `responders_en_route`
-  (a count) on `AlertDetailResponse` and nothing else — no responder names,
-  distances or ETA, and no WS frame for them (`POST /respond` returns the ETA to
-  the responder only). The active screen therefore polls the count every 10 s and
-  says "N responders on the way"; a responder list (or a `RESPONDER_ADDED` frame
-  with name + distance/ETA) is a backend addition.
+- Who is coming is now visible: `AlertDetailResponse.responders`
+  (`ResponderSummary`: `user_id`, optional `name`, `distance_m`, `eta_seconds`,
+  `responded_at`) is **participant-only** — the sender and recorded responders
+  get the list, any other authenticated viewer still keeps just
+  `responders_en_route`. The active screen renders it (nearest first, "Responder"
+  when the name is omitted) and falls back to the bare count when the list is
+  absent, polling the detail every 10 s; `RESPONDER_ADDED` appends new arrivals
+  immediately. Distances/ETA are the values recorded when the responder answered,
+  not live positions.
 - One active session per account: the backend stores the token on the user row
   (`users.token`), so logging in anywhere rotates it and revokes whatever session
   the account had before — a second device, a second browser profile, the

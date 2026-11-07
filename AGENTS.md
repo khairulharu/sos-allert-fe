@@ -280,15 +280,19 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   succeeded, and finally the evidence upload to `POST /api/sos/:id/media` with
   the same clip. A blocked or failing microphone only downgrades the UI
   ("Sending without audio", `MIC_HELP` copy) and the SOS still goes out. The
-  triage card starts as "from your description" — or "from your audio" as soon
-  as the classify response lands — then `applyTriage()` takes over from the media
-  response or an `ALERT_TRIAGE` frame; it shows a type icon (the raw enum used to
-  be printed inside a 36px badge, where it overflowed as a second copy of the
-  label), the type label, the server's summary when it sends one, the transcript
-  of the clip, and the transcription note (`disabled`/`too_large`/`empty`/
-  `failed`, hidden once the level really came from the audio). When the media
-  response escalated the fan-out it also adds "+N responders at the wider radius"
-  and the notified count includes them. The active screen carries its own map
+  triage card leads the active screen (above the map) and is always rendered:
+  header "AI triage · from your audio / from your description / not classified",
+  a type icon (the raw enum used to be printed inside a 36px badge, where it
+  overflowed as a second copy of the label), the type label with the server's
+  summary when it sends one, the severity bar and the fan-out copy when a level
+  is known, and an "Audio transcript · 10 s clip" block — the quoted text, the
+  transcription note (`disabled`/`too_large`/`empty`/`failed`), "No transcript
+  was returned for this clip", or "No audio was recorded" when the microphone was
+  blocked. `applyTriage()` moves it off the description as the classify response,
+  the media response or an `ALERT_TRIAGE` frame lands; with no classification at
+  all it says so instead of disappearing. When the media response escalated the
+  fan-out it also adds "+N responders at the wider radius" and the notified count
+  includes them. The active screen carries its own map
   (168 px: the live pin from the tracking socket, the fan-out radius circle at
   the same tier the text claims, recenter and radius controls) because the sheet
   covers Home, which was the only map — a sender could not see the alert on any
@@ -302,14 +306,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `confirming`, the second tap sends `POST /resolve` — so a stray tap cannot
   stop a live alert. Starts tracking via `ontrack`, sends throttled breadcrumbs
   while active, shows the WS connection state, and ends on terminal
-  `ALERT_STATUS`. The active view also keeps a manual evidence recorder on top
-  of the automatic clip: `getUserMedia` + `MediaRecorder`, 10 s auto-stop,
-  explicit stop, mime fallback (webm/opus → webm → mp4 → ogg), multipart upload
-  through the same `uploadClip()`, and cleanup on unmount or terminal status
-  (an in-flight clip is dropped when the alert ends). The audio section also
-  reports the permission state before the user taps record: denied → how to
-  re-allow the microphone, insecure origin → “needs a secure connection”
-  (`$lib/mic.js`).
+  `ALERT_STATUS`. There is no manual recorder: the countdown clip is the only
+  one, and the active view just reports its receipt ("Sending your audio…" →
+  "Audio received · responders can listen to your 10 s clip", the upload error,
+  or "No audio was attached" when the microphone was blocked). The clip is
+  dropped when the alert ends or the sheet closes.
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
 - `src/lib/components/ProfileView.svelte` — profile + settings toggles. The

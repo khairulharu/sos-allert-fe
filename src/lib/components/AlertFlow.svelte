@@ -15,11 +15,10 @@
     Loader2,
     AlertTriangle,
     Mic,
-    Square,
   } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
   import MapCard from './MapCard.svelte'
-  import { MIC_HELP, micBlockReason, micErrorText, micPermissionState } from '$lib/mic.js'
+  import { MIC_HELP, micBlockReason, micErrorText } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
   import { initialsFor, responderMeta } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
@@ -49,14 +48,14 @@
   let errorMsg = $state('')
   let rateLimited = $state(false)
 
-  // ---- 10 s audio evidence ----
-  const MAX_MEDIA_SECONDS = 10
-  let mediaState = $state('idle') // idle | starting | recording | uploading | uploaded | error
-  let mediaSeconds = $state(MAX_MEDIA_SECONDS)
+  // ---- audio ----
+  // One clip, recorded during the countdown and uploaded automatically; the
+  // sender only needs the receipt, so there is no manual recorder any more.
+  let mediaState = $state('idle') // idle | uploading | uploaded | error
   let mediaError = $state('')
-  let mediaUploads = $state(0)
-  // Countdown capture, kept apart from the manual evidence recorder so the SOS
-  // screen can say whether the classification is getting audio.
+  let audioAttached = $state(false)
+  // Countdown capture: opens the microphone with the countdown so the SOS can
+  // say whether the classification is getting audio.
   let captureState = $state('idle') // idle | starting | recording | blocked | failed
   let captureError = $state('')
   let capturePromise = null
@@ -71,24 +70,9 @@
   let recipientsAdded = $state(0)
   let mediaRecorder = null
   let mediaStream = null
-  let mediaTimer = null
   let mediaChunks = []
   let clipWaiter = null
   let destroyed = false
-
-  // Permission state, so the SOS screen can explain a blocked microphone
-  // before the user taps record — browsers only show that dialog once.
-  let micState = $state('unknown')
-  $effect(() => {
-    if (phase !== 'active') return
-    let cancelled = false
-    micPermissionState().then((state) => {
-      if (!cancelled) micState = state
-    })
-    return () => {
-      cancelled = true
-    }
-  })
 
   const liveStatus = $derived(live?.status || null)
   const liveConnection = $derived(live?.connection || 'idle')
@@ -166,7 +150,11 @@
     failed: 'Transcription failed — the description classification stands.',
   }
   const triageSourceLabel = $derived(
-    triageFromAudio ? 'from your audio' : 'from your description',
+    !triageResult
+      ? 'not classified'
+      : triageFromAudio
+        ? 'from your audio'
+        : 'from your description',
   )
   // Everyone the alert reached: the first fan-out plus the responders the
   // backend added when the audio raised the priority.
@@ -282,7 +270,10 @@
     // Evidence upload: the media row is what lets responders listen to the
     // clip. Its response can still escalate the fan-out when this ran as the
     // fallback path (no pre-trigger classification).
-    if (clip && !destroyed) uploadClip(clip.blob, clip.extension)
+    if (clip && !destroyed) {
+      audioAttached = true
+      uploadClip(clip.blob, clip.extension)
+    }
   }
 
   async function doResolve() {
@@ -334,8 +325,6 @@
   // Drops whatever is being recorded and releases the microphone. A caller
   // waiting for a clip is answered with null, never left hanging.
   function cleanupMedia() {
-    clearInterval(mediaTimer)
-    mediaTimer = null
     if (mediaRecorder) {
       mediaRecorder.onstop = null
       mediaRecorder.ondataavailable = null
@@ -412,63 +401,7 @@
     return pending
   }
 
-  // ---- manual evidence clip on the active screen ----
-  async function startRecording() {
-    if (
-      !alertId ||
-      phase !== 'active' ||
-      mediaState === 'starting' ||
-      mediaState === 'recording' ||
-      mediaState === 'uploading'
-    ) {
-      return
-    }
-    const blocked = micBlockReason()
-    if (blocked) {
-      mediaState = 'error'
-      mediaError = MIC_HELP[blocked]
-      return
-    }
-
-    mediaError = ''
-    mediaState = 'starting'
-    try {
-      await openRecorder()
-      if (destroyed || phase !== 'active') {
-        cleanupMedia()
-        mediaState = 'idle'
-        return
-      }
-      mediaState = 'recording'
-      mediaSeconds = MAX_MEDIA_SECONDS
-      clearInterval(mediaTimer)
-      mediaTimer = setInterval(() => {
-        mediaSeconds = Math.max(0, mediaSeconds - 1)
-        if (mediaSeconds === 0) stopRecording()
-      }, 1000)
-    } catch (err) {
-      cleanupMedia()
-      mediaState = 'error'
-      mediaError = micErrorText(err)
-    }
-  }
-
-  function stopRecording() {
-    clearInterval(mediaTimer)
-    mediaTimer = null
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      try {
-        mediaRecorder.stop()
-      } catch {
-        cleanupMedia()
-        mediaState = 'idle'
-      }
-    }
-  }
-
   async function finalizeRecording(recorder) {
-    clearInterval(mediaTimer)
-    mediaTimer = null
     mediaRecorder = null
     stopTracks()
     if (captureState === 'recording' || captureState === 'starting') captureState = 'idle'
@@ -487,14 +420,9 @@
       return
     }
     if (!blob.size) {
-      if (waiter) {
-        waiter(null)
-        captureState = 'failed'
-        captureError = 'No audio was captured.'
-      } else {
-        mediaState = 'error'
-        mediaError = 'No audio was captured. Try again.'
-      }
+      waiter?.(null)
+      captureState = 'failed'
+      captureError = 'No audio was captured.'
       return
     }
     // Countdown clip: there is no alert to attach it to yet, so the waiter in
@@ -519,7 +447,6 @@
         `sos-${alertId}-${Date.now()}.${extension}`,
       )
       if (destroyed) return
-      mediaUploads += 1
       mediaState = 'uploaded'
       if (result?.transcript) transcript = result.transcript
       transcriptionStatus = result?.transcription_status || ''
@@ -549,15 +476,10 @@
   // a failed trigger or the end of the alert drops the clip and the microphone.
   $effect(() => {
     if (phase === 'count' || phase === 'sending' || phase === 'active') return
-    const manual = mediaState === 'recording' || mediaState === 'starting'
     const capture = captureState === 'recording' || captureState === 'starting'
-    if (!manual && !capture) return
+    if (!capture) return
     cleanupMedia()
-    if (manual) {
-      mediaState = 'idle'
-      mediaSeconds = MAX_MEDIA_SECONDS
-    }
-    if (capture) captureState = 'idle'
+    captureState = 'idle'
   })
 
   // A later transcription can raise or lower the severity; ALERT_TRIAGE arrives
@@ -936,49 +858,47 @@
         </p>
       </div>
 
-      <!-- WHERE HELP IS HEADED: the alert had no map at all before, so the
-           sender could not see themselves, the fan-out radius or the live pin. -->
-      <div class="mt-4">
-        <MapCard
-          height="h-[168px]"
-          own={mapPosition}
-          radiusM={fanoutRadiusM}
-          radiusLabel={`Live · ${fanoutRadiusM >= 1000 ? `${fanoutRadiusM / 1000} km` : `${fanoutRadiusM} m`} radius`}
-          showFooter={false}
-        />
-      </div>
-
-      <!-- AI TRIAGE RESULT CARD -->
-      {#if triageResult}
-        <div class="mt-4 overflow-hidden rounded-2xl bg-white/[0.06] ring-1 ring-white/[0.1]">
-          <div class="flex items-center justify-between gap-2 bg-white/[0.05] px-3.5 py-2.5">
-            <span class="inline-flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-white/50">
-              <Radio size={11} class="text-[#6EE7B7]" />
-              AI triage · {triageSourceLabel}
+      <!-- AI CLASSIFICATION: always visible, so the sender can read the type,
+           the level and what the clip actually said (or why there is no text). -->
+      <div class="mt-4 overflow-hidden rounded-2xl bg-white/[0.06] ring-1 ring-white/[0.1]">
+        <div class="flex items-center justify-between gap-2 bg-white/[0.05] px-3.5 py-2.5">
+          <span class="inline-flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-white/50">
+            <Radio size={11} class="text-[#6EE7B7]" />
+            AI triage · {triageSourceLabel}
+          </span>
+          <span
+            class="text-[9.5px] font-semibold {liveConnection === 'open'
+              ? 'text-[#6EE7B7]'
+              : liveConnection === 'error'
+                ? 'text-[#FF8080]'
+                : 'text-[#FFD580]'}"
+            >{connectionLabel}</span
+          >
+        </div>
+        <div class="p-3.5">
+          <div class="flex items-center gap-2.5">
+            <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/10">
+              <TypeIcon size={17} strokeWidth={2.2} class={triageResult ? (TRIAGE_COLORS[triageResult.emergency_type] || 'text-white') : 'text-white/50'} />
             </span>
-            <span
-              class="text-[9.5px] font-semibold {liveConnection === 'open'
-                ? 'text-[#6EE7B7]'
-                : liveConnection === 'error'
-                  ? 'text-[#FF8080]'
-                  : 'text-[#FFD580]'}"
-              >{connectionLabel}</span
-            >
-          </div>
-          <div class="p-3.5">
-            <div class="flex items-center gap-2.5">
-              <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/10">
-                <TypeIcon size={17} strokeWidth={2.2} class={TRIAGE_COLORS[triageResult.emergency_type] || 'text-white'} />
-              </span>
-              <div class="min-w-0 flex-1">
+            <div class="min-w-0 flex-1">
+              {#if triageResult}
                 <p class="text-[13px] font-semibold text-white">
                   {TRIAGE_LABELS[triageResult.emergency_type] || triageResult.emergency_type}
                 </p>
                 {#if triageResult.summary}
                   <p class="mt-0.5 text-[10.5px] leading-snug text-white/55">{triageResult.summary}</p>
                 {/if}
-              </div>
+              {:else}
+                <p class="text-[13px] font-semibold text-white/80">Classification unavailable</p>
+                <p class="mt-0.5 text-[10.5px] leading-snug text-white/50">
+                  No AI classification came back for this alert, so responders were alerted with the
+                  default fan-out.
+                </p>
+              {/if}
             </div>
+          </div>
+
+          {#if triageResult}
             <div class="mt-3">
               <div class="flex items-center justify-between text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/45">
                 <span>Severity</span>
@@ -997,108 +917,73 @@
                 {/if}
               </p>
             </div>
+          {/if}
 
-            {#if mediaState === 'uploading' && !triageFromAudio}
-              <p class="mt-3 flex items-center gap-1.5 text-[9.5px] text-white/45">
+          <div class="mt-3 rounded-xl bg-white/[0.06] px-3 py-2.5">
+            <p class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">
+              Audio transcript · {total} s clip
+            </p>
+            {#if transcript}
+              <p class="mt-1 text-[11.5px] italic leading-relaxed text-white/80">“{transcript}”</p>
+            {:else if transcriptionStatus && transcriptionStatus !== 'completed'}
+              <p class="mt-1 text-[10.5px] leading-snug text-white/45">
+                {TRANSCRIPTION_NOTES[transcriptionStatus] || 'No transcript was returned.'}
+              </p>
+            {:else if mediaState === 'uploading' || classifying}
+              <p class="mt-1 flex items-center gap-1.5 text-[10.5px] text-white/45">
                 <Loader2 size={11} class="animate-spin" />
                 Reading the recorded audio…
               </p>
-            {/if}
-
-            {#if transcript}
-              <div class="mt-3 rounded-xl bg-white/[0.06] px-3 py-2.5">
-                <p class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">
-                  Audio transcript · {total} s clip
-                </p>
-                <p class="mt-1 text-[11.5px] italic leading-relaxed text-white/80">“{transcript}”</p>
-              </div>
-            {:else if triageFromAudio}
-              <p class="mt-3 text-[9.5px] leading-snug text-white/40">
-                The audio classified this alert, but the server returned no transcript text.
+            {:else if captureState === 'blocked' || captureState === 'failed'}
+              <p class="mt-1 text-[10.5px] leading-snug text-white/45">
+                No audio was recorded, so there is no transcript.
               </p>
-            {/if}
-
-            {#if transcriptionStatus && transcriptionStatus !== 'completed' && !triageFromAudio}
-              <p class="mt-2 text-[9.5px] leading-snug text-white/40">
-                {TRANSCRIPTION_NOTES[transcriptionStatus] || ''}
-              </p>
-            {/if}
-
-            {#if classifyError && !triageFromAudio}
-              <p class="mt-2 text-[9.5px] leading-snug text-white/40">
-                Pre-trigger audio classification unavailable ({classifyError}) — this level came
-                from your description.
+            {:else}
+              <p class="mt-1 text-[10.5px] leading-snug text-white/45">
+                No transcript was returned for this clip.
               </p>
             {/if}
           </div>
-        </div>
-      {/if}
 
-      <!-- AUDIO EVIDENCE -->
-      <div class="mt-4 rounded-2xl bg-white/[0.035] p-3.5 ring-1 ring-white/[0.06]">
-        <div class="flex items-center justify-between gap-2">
-          <p
-            class="inline-flex items-center gap-1.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35"
-          >
-            <Mic size={11} /> Audio evidence
-          </p>
-          <span class="text-[9px] text-white/30">max 10 s · responder-only</span>
-        </div>
-
-        {#if mediaState === 'recording'}
-          <div class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/10">
-            <div
-              class="h-full rounded-full bg-sos transition-[width] duration-1000"
-              style="width: {((MAX_MEDIA_SECONDS - mediaSeconds) / MAX_MEDIA_SECONDS) * 100}%"
-            ></div>
-          </div>
-        {/if}
-
-        <button
-          type="button"
-          onclick={mediaState === 'recording' ? stopRecording : startRecording}
-          disabled={mediaState === 'starting' || mediaState === 'uploading'}
-          class="mt-2.5 flex w-full items-center justify-center gap-2 rounded-full py-2.5 text-[11.5px] font-semibold ring-1 transition disabled:opacity-60 {mediaState ===
-          'recording'
-            ? 'bg-sos text-white ring-sos'
-            : 'bg-white/[0.06] text-white/80 ring-white/10 hover:bg-white/[0.1]'}"
-        >
-          {#if mediaState === 'recording'}
-            <Square size={12} fill="currentColor" />
-            Stop recording · {mediaSeconds}s
-          {:else if mediaState === 'starting' || mediaState === 'uploading'}
-            <Loader2 size={13} class="animate-spin" />
-            {mediaState === 'starting' ? 'Starting microphone…' : 'Uploading evidence…'}
-          {:else if mediaState === 'uploaded'}
-            <Mic size={13} />
-            Record another clip
-          {:else if mediaState === 'error'}
-            <Mic size={13} />
-            Try recording again
-          {:else}
-            <Mic size={13} />
-            Record 10 s audio
+          {#if classifyError && !triageFromAudio}
+            <p class="mt-2 text-[9.5px] leading-snug text-white/40">
+              Pre-trigger audio classification unavailable ({classifyError}) — this level came from
+              your description.
+            </p>
           {/if}
-        </button>
+        </div>
+      </div>
 
-        {#if mediaState === 'uploaded'}
-          <p class="mt-2 flex items-center gap-1.5 text-[9.5px] text-[#6EE7B7]">
-            <Check size={11} />
-            Audio uploaded{mediaUploads > 1 ? ` · ${mediaUploads} clips` : ''}. Only responders can
-            access it.
+      <!-- WHERE HELP IS HEADED -->
+      <div class="mt-3">
+        <MapCard
+          height="h-[168px]"
+          own={mapPosition}
+          radiusM={fanoutRadiusM}
+          radiusLabel={`Live · ${fanoutRadiusM >= 1000 ? `${fanoutRadiusM / 1000} km` : `${fanoutRadiusM} m`} radius`}
+          showFooter={false}
+        />
+      </div>
+
+      <!-- The evidence card is gone: the clip is recorded during the countdown
+           and uploaded automatically, so the sender only needs the receipt. -->
+      <div class="mt-3 flex items-center gap-2 rounded-2xl bg-white/[0.035] px-3.5 py-2.5 ring-1 ring-white/[0.06]">
+        {#if mediaState === 'uploading' || (audioAttached && mediaState === 'idle')}
+          <Loader2 size={13} class="animate-spin text-white/60" />
+          <p class="text-[10.5px] font-medium text-white/60">Sending your audio to responders…</p>
+        {:else if mediaState === 'uploaded'}
+          <Check size={13} class="text-[#6EE7B7]" />
+          <p class="text-[10.5px] font-medium text-[#8FF0C6]">
+            Audio received · responders can listen to your {total} s clip.
           </p>
-        {:else if mediaError}
-          <p class="mt-2 text-[9.5px] leading-snug text-[#FF8080]">{mediaError}</p>
-        {:else if micState === 'insecure'}
-          <p class="mt-2 text-[9.5px] leading-snug text-[#FFD580]">{MIC_HELP.insecure}</p>
-        {:else if micState === 'denied'}
-          <p class="mt-2 text-[9.5px] leading-snug text-[#FFD580]">{MIC_HELP.denied}</p>
-        {:else if micState === 'unsupported'}
-          <p class="mt-2 text-[9.5px] leading-snug text-[#FFD580]">{MIC_HELP.unsupported}</p>
+        {:else if mediaState === 'error'}
+          <AlertTriangle size={13} class="shrink-0 text-[#FF8080]" />
+          <p class="text-[10.5px] font-medium text-[#FF8080]">
+            {mediaError || 'The audio could not be sent.'}
+          </p>
         {:else}
-          <p class="mt-2 text-[9.5px] leading-snug text-white/35">
-            Records ambient audio from your microphone. You can stop early.
-          </p>
+          <Mic size={13} class="text-white/40" />
+          <p class="text-[10.5px] font-medium text-white/45">No audio was attached to this alert.</p>
         {/if}
       </div>
 

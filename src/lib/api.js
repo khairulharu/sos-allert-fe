@@ -133,4 +133,12 @@ export const contacts = {
   create: (fields) => request('POST', '/api/emergency-contacts', fields),
 }
 
+// ---- Browser push subscriptions ----
+export const push = {
+  publicKey: () => request('GET', '/api/push/vapid-public-key'),
+  subscribe: (body) => request('POST', '/api/push/subscriptions', body),
+  unsubscribe: (endpoint) => request('DELETE', '/api/push/subscriptions', { endpoint }),
+  list: () => request('GET', '/api/push/subscriptions'),
+}
+
 export const API_BASE_URL = API_BASE

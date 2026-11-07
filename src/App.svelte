@@ -22,6 +22,7 @@
   import { formatDistance, formatEta } from '$lib/alertMeta.js'
   import { micPermissionState, requestMicAccess } from '$lib/mic.js'
   import { browserPosition, startNearbyPolling, stopNearbyPolling } from '$lib/geo.js'
+  import { syncPushSubscription, disablePush } from '$lib/push.js'
 
   let tab = $state('home')
   let sosOpen = $state(false)
@@ -51,6 +52,7 @@
       syncActiveTracking()
       startInboxPolling()
       startNearbyPolling({ onSessionExpired })
+      syncPushSubscription().catch(() => {})
     }
   })
 
@@ -206,17 +208,25 @@
     }
   }
 
+  // Returning to the tab (e.g. after clicking a push notification) surfaces a
+  // fresh alert without waiting for the next tick.
+  function onVisibilityChange() {
+    if (!document.hidden) pollInbox()
+  }
+
   function startInboxPolling() {
     if (inboxTimer) return
     pollInbox()
     inboxTimer = setInterval(() => {
       if (!document.hidden) pollInbox()
     }, INBOX_POLL_MS)
+    document.addEventListener('visibilitychange', onVisibilityChange)
   }
 
   function stopInboxPolling() {
     clearInterval(inboxTimer)
     inboxTimer = null
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     inboxPolling = false
     inboxInitialised = false
     pendingAlert = null
@@ -356,20 +366,26 @@
       syncActiveTracking()
       startInboxPolling()
       startNearbyPolling({ onSessionExpired })
+      syncPushSubscription().catch(() => {})
     }
   }
 
-  function onSignOut() {
+  async function onSignOut() {
+    // The server-side delete needs a valid token, and logout() revokes it.
+    await disablePush()
     stopInboxPolling()
     stopNearbyPolling()
     stopLocationHeartbeat()
     stopTracking()
-    authed = false
+    await logout()
     currentUser = null
     tab = 'home'
   }
 
   async function onSessionExpired() {
+    // The token is already dead, so the DELETE 401s and the subscription is
+    // cleaned up by the backend once the push service reports it gone (410).
+    await disablePush()
     stopInboxPolling()
     stopNearbyPolling()
     stopLocationHeartbeat()

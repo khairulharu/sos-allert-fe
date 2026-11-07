@@ -16,8 +16,10 @@
     PhoneCall,
     Users,
   } from '@lucide/svelte'
+  import { onMount } from 'svelte'
   import { user as mockUser } from '$lib/data.js'
   import { place } from '$lib/stores.js'
+  import { enablePush, disablePush, pushPermissionState } from '$lib/push.js'
 
   let { user = mockUser, onsignout } = $props()
 
@@ -44,6 +46,27 @@
     siren: false,
     autocall: true,
   })
+  let pushHint = $state('')
+
+  onMount(async () => {
+    settings.push = pushPermissionState() === 'granted'
+  })
+
+  async function onToggle(key) {
+    if (key !== 'push') {
+      settings[key] = !settings[key]
+      return
+    }
+    if (settings.push) {
+      settings.push = false
+      pushHint = ''
+      await disablePush()
+      return
+    }
+    const res = await enablePush()
+    settings.push = !!res.ok
+    pushHint = res.ok ? '' : res.message
+  }
 
   const toggles = [
     {
@@ -164,14 +187,14 @@
           </span>
           <div class="min-w-0 flex-1">
             <p class="text-[12.5px] font-semibold text-ink">{item.title}</p>
-            <p class="mt-0.5 truncate text-[10.5px] text-muted">{item.hint}</p>
+            <p class="mt-0.5 truncate text-[10.5px] text-muted">{item.key === 'push' && pushHint ? pushHint : item.hint}</p>
           </div>
           <button
             type="button"
             role="switch"
             aria-checked={settings[item.key]}
             aria-label={item.title}
-            onclick={() => (settings[item.key] = !settings[item.key])}
+            onclick={() => onToggle(item.key)}
             class="relative h-[26px] w-[44px] shrink-0 rounded-full transition-colors duration-200 {settings[
               item.key
             ]

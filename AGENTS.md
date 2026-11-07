@@ -2,8 +2,12 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `dac6219` (location APIs, auth rate limit, audio STT).
-The mirrored API contract is at frontend commit `6cd9ea0`.
+Backend state at handoff: commit `7e7ec3b` (X-Forwarded-For trust + locked CORS)
+on top of `dac6219` (location APIs, auth rate limit, audio STT), plus the browser
+**Web Push** work (uncommitted backend working tree: `webpush` config section,
+`push_subscriptions` table, `/api/push/*` endpoints).
+The mirrored API contract was re-copied in that working tree; everything else is
+at frontend commit `6cd9ea0`.
 
 ## Run
 
@@ -20,21 +24,31 @@ npm run build    # production build
 cd ../backend && go run cmd/web/main.go
 ```
 
+The backend locks CORS to `https://allert.my.id` and `http://localhost:5173`,
+so reach the dev server at exactly `http://localhost:5173`. `http://127.0.0.1:5173`,
+a LAN address (`npm run dev -- --host`), or `npm run preview` (port 4173) are
+refused by preflight until they are added to the `AllowOrigins` list in
+`../backend/internal/config/fiber.go`.
+
 ## Backend contract (authoritative)
 
 - Full spec: `api/api-spec.json`
 - Human summary: `api/api.md`
-- Both files are mirrored from `../backend/api/` at backend commit `dac6219`
-  (frontend commit `6cd9ea0`). The backend copy remains the source of truth;
-  re-copy after backend API changes. The frontend copy exists so a session
-  opened in this repo has the contract without leaving the workspace.
+- Both files are mirrored from `../backend/api/`. The backend copy remains the
+  source of truth; re-copy after backend API changes. The frontend copy exists
+  so a session opened in this repo has the contract without leaving the
+  workspace. Last re-copy: the browser Web Push endpoints (`/api/push/*`), from
+  the backend working tree on top of commit `dac6219`.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.
 - Error envelope: `{ "errors": "<message>" }` with the HTTP status.
 - All timestamps are epoch milliseconds (`int64`).
-- CORS allows any origin (`AllowOrigins: "*"`) with `Authorization` and
-  `X-Idempotency-Key`; only `Content-Disposition` is exposed (see rate-limit
+- CORS is origin-locked to `https://allert.my.id` and `http://localhost:5173`
+  (`AllowMethods` GET/POST/PUT/PATCH/DELETE/OPTIONS, `AllowHeaders` Origin,
+  Content-Type, Accept, Authorization, X-Idempotency-Key, `AllowCredentials`
+  false). Any other origin fails preflight, so the app must be served from one
+  of those two origins. Only `Content-Disposition` is exposed (see rate-limit
   gap below).
 - Protected routes: everything except `POST /api/users`,
   `POST /api/users/_login`, and `GET /metrics`.
@@ -52,12 +66,18 @@ cd ../backend && go run cmd/web/main.go
   12 s, real sheet/banner, `POST /respond`, then responder WS stream),
   10 s audio evidence via `MediaRecorder` + multipart upload. The backend now
   transcribes audio (≤ 25 MB) and returns `transcript`, `transcription_status`,
-  and updated `triage`; the UI does not display those fields yet.
+  and updated `triage`; the UI does not display those fields yet. **Browser Web
+  Push is wired**: the Profile toggle registers `/sw.js` + a VAPID subscription
+  with `POST /api/push/subscriptions`, `App.svelte` re-syncs it on
+  restore/login and drops it on sign-out/session-expired, and a nearby SOS
+  shows a real OS notification (see "Browser Web Push" below).
 - Not wired yet:
   - handling the new `ALERT_TRIAGE` WebSocket frame and showing the updated
     classification/transcript in the active alert and responder sheet;
   - video capture and in-app playback/download of media;
-  - native push (FCM/APNs) — inbox polling is the browser fallback.
+  - native push device tokens (FCM/APNs via `fcm_token`/`apns_token`) — browser
+    Web Push covers the browser demo, and inbox polling stays as the in-app
+    fallback.
 
 ## Important files
 
@@ -65,7 +85,20 @@ cd ../backend && go run cmd/web/main.go
   `status`, `payload`, and `retryAfter` (parsed from `Retry-After` seconds or
   HTTP date). `request()` passes `FormData` through untouched (no JSON
   Content-Type) for multipart uploads; `sos.uploadMedia(alertId, blob, filename)`
-  posts field `file` to `/api/sos/:id/media`.
+  posts field `file` to `/api/sos/:id/media`. The `push` module wraps the four
+  Web Push routes (`publicKey`, `subscribe`, `unsubscribe`, `list`).
+- `src/lib/push.js` — browser Web Push registration (mirrors the grant-only
+  style of `mic.js`). `pushBlockReason()` reports `insecure`/`unsupported`
+  first, `pushPermissionState()` maps `Notification.permission`, and
+  `enablePush()` (prompt + `/sw.js` + `PushManager.subscribe()` + backend POST),
+  `disablePush()` (backend DELETE + browser `unsubscribe()`), and
+  `syncPushSubscription()` (silent re-register, only when already granted) do
+  the work. A subscription created with a different VAPID key is replaced
+  instead of reused. `PUSH_HELP` holds the user-facing copy.
+- `public/sw.js` — the service worker Vite serves from the root: `push` →
+  `showNotification` (`title`/`body`/`tag = alert_id`, `requireInteraction`,
+  `data.url`), `notificationclick` → focus an existing window or
+  `openWindow('/')`.
 - `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
   by the auth and SOS 429 UIs.
 - `src/lib/place.js` — reverse geocoding for the header location pill
@@ -123,7 +156,17 @@ cd ../backend && go run cmd/web/main.go
   `HomeView` mounted (hidden) so tab switches do not rebuild the map or re-run
   the location flow. The microphone permission is primed once per session
   (`primeMicrophone` → `$lib/mic.js`) next to the location request, so a
-  first-time browser dialog never lands mid-SOS.
+  first-time browser dialog never lands mid-SOS. Web Push is driven from the
+  same hooks: `syncPushSubscription()` after `startNearbyPolling()` on restore
+  and login, `await disablePush()` **before** the session teardown in
+  `onSignOut()`/`onSessionExpired()` (the server DELETE needs a valid token),
+  and `startInboxPolling()` registers the `visibilitychange` listener that polls
+  the inbox immediately when the tab becomes visible again (clicking a push
+  notification surfaces the incoming sheet without waiting a tick);
+  `stopInboxPolling()` removes it again. `onSignOut()` ends with the store's
+  `logout()`, which calls `DELETE /api/users` and clears the token + stored user,
+  so signing out really revokes the session (previously it only reset the local
+  flags and a reload logged the user straight back in).
 - `src/lib/components/HomeView.svelte` — protection card, responder count,
   quick actions. Location is read-only here: `own`, `responders`,
   `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, and the
@@ -156,7 +199,10 @@ cd ../backend && go run cmd/web/main.go
   insecure origin → “needs a secure connection” (`$lib/mic.js`).
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
-- `src/lib/components/ProfileView.svelte` — profile + settings toggles.
+- `src/lib/components/ProfileView.svelte` — profile + settings toggles. The
+  `push` toggle is real: state comes from `pushPermissionState()` on mount and
+  the click handler calls `enablePush()`/`disablePush()`, showing `PUSH_HELP`
+  copy in the row hint when it fails. The other toggles are still local state.
 
 ## Location API for the responder map
 
@@ -269,6 +315,43 @@ Whisper endpoint (default Groq `whisper-large-v3-turbo`, language `id`).
 message switch and surface the new classification in the active alert and
 responder sheet.
 
+## Browser Web Push (implemented)
+
+Push reaches the browser directly (VAPID, no Firebase credentials), so a nearby
+SOS shows a real OS notification even while the tab is in the background.
+
+- Config lives in the backend: `../backend/config.json` → `webpush.enabled`,
+  `vapid_public_key`, `vapid_private_key`, `subscriber`, `ttl_seconds`. The
+  private key never leaves the backend; the browser reads the public key from
+  `GET /api/push/vapid-public-key` (`503` when the channel is off or the key
+  pair is missing). `subscriber` is a bare email — the library adds `mailto:`.
+- Flow: Profile → **Push notifications** toggle (a user gesture, the only place
+  that opens the permission prompt) → `enablePush()` → `/sw.js` registered →
+  `PushManager.subscribe({userVisibleOnly: true, applicationServerKey})` →
+  `POST /api/push/subscriptions` with `{endpoint, p256dh, auth, user_agent}`.
+- `endpoint` is unique in `push_subscriptions`, so toggling off/on (or
+  re-subscribing from the same browser as another user) upserts one row instead
+  of duplicating. Toggling off sends `DELETE /api/push/subscriptions` and then
+  `subscription.unsubscribe()`, so the browser stops receiving alerts.
+- Notification payload: `{title, body, data}` where `data` mirrors the FCM data
+  map (`alert_id`, `sender_id`, `emergency_type`, `latitude`, `longitude`,
+  optional `severity`/`summary`) plus `url: "/"`; `public/sw.js` renders it and
+  a click focuses an open window (or opens `/`).
+- `App.svelte` re-syncs silently on restore/login — `syncPushSubscription()`
+  only runs when the permission is already granted, so a browser that never
+  opened the toggle gets no unprompted dialog (its in-app inbox sheet still
+  works). Sign-out and session-expired call `disablePush()` before the session
+  teardown, because the server DELETE needs a valid token.
+- Requires a secure context (`https://` or `localhost`); an `http://` LAN host
+  reports `insecure` (`PUSH_HELP.insecure`) instead of failing silently.
+- Backend caveat: web push only fires in the web process, so it needs
+  `kafka.producer.enabled: false` (the worker passes `nil` — it has no DB).
+  The current dev `config.json` satisfies this.
+- Verified live: Chrome at `localhost:5173` created a real
+  `https://fcm.googleapis.com/fcm/send/...` subscription through the toggle, and
+  an SOS triggered by a second user delivered the encrypted push through FCM into
+  `sw.js` (`showNotification` with the triage body and `tag = alert_id`).
+
 ## Live tracking protocol notes
 
 - WS URL: `ws(s)://<ws-base>/ws/sos/:alertId/track?token=<raw token>`; no
@@ -289,17 +372,20 @@ responder sheet.
 
 ## Backend notes / known gaps
 
-- Dev DB migrations are at `20261108000000_alert_media_transcription`; other
+- Dev DB migrations are at `20261109000000_push_subscriptions`; other
   environments need `migrate up` (see `../backend/README.md`).
 - Nearby respond coords are masked; do not expect exact positions.
-- FCM/APNs/Twilio credentials are not configured, so push is log-only.
-- Pending backend items: push credentials, Redis GEO TTL/cleanup, and broader
-  re-fanout when post-trigger audio raises severity. Audio STT itself is wired.
-- Incoming-alert semantics: `GET /api/sos/inbox` is the browser substitute for
-  push (FCM/APNs is log-only). WS tracking is per-alert and only authorizes the
-  sender or a recorded responder, so the app polls the inbox first and connects
-  to WS after `POST /respond`. Inbox coords are masked (`masked: true`) until
-  the user responds, so the sheet's distance is approximate.
+- Native FCM/APNs device push and Twilio SMS are log-only (no credentials);
+  **browser Web Push is configured and live** instead (see "Browser Web Push").
+- Pending backend items: native push/SMS credentials, Redis GEO TTL/cleanup, and
+  broader re-fanout when post-trigger audio raises severity. Audio STT and
+  browser Web Push themselves are wired.
+- Incoming-alert semantics: `GET /api/sos/inbox` is the in-app fallback for push
+  (it also feeds the sheet when Web Push is off/denied). WS tracking is per-alert
+  and only authorizes the sender or a recorded responder, so the app polls the
+  inbox first and connects to WS after `POST /respond`. Inbox coords are masked
+  (`masked: true`) until the user responds, so the sheet's distance is
+  approximate.
 - `alert_responses` has no unique `(alert_id, responder_id)` constraint; the UI
   guards double submits and filters already-responded alerts out of the
   incoming list (`masked !== true` means participant).

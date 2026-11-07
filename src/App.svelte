@@ -537,6 +537,7 @@
           own={lastCoord}
           live={responderTrack}
           responded={respondedAlert}
+          youId={currentUser?.id}
           busy={responding}
           error={respondError}
           onclose={dismissIncoming}

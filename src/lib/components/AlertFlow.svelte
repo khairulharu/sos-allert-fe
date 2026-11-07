@@ -21,7 +21,7 @@
   import MapCard from './MapCard.svelte'
   import { MIC_HELP, micBlockReason, micErrorText, micPermissionState } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
-  import { initialsFor, formatDistance, formatEta, timeAgo } from '$lib/alertMeta.js'
+  import { initialsFor, responderMeta } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
 
   let {
@@ -190,19 +190,6 @@
   const respondedCount = $derived(
     Math.max(respondersList.length, respondersEnRoute, acknowledged ? 1 : 0),
   )
-  // "240 m away · ETA 3 min · 2 min ago". The backend records the distance and
-  // ETA at answer time, so they describe where the responder was when they set
-  // off, not where they are now.
-  function responderMeta(person) {
-    return [
-      Number.isFinite(person?.distance_m) ? `${formatDistance(person.distance_m)} away` : '',
-      person?.eta_seconds ? `ETA ${formatEta(person.eta_seconds)}` : '',
-      Number.isFinite(person?.responded_at) ? timeAgo(person.responded_at) : '',
-    ]
-      .filter(Boolean)
-      .join(' · ')
-  }
-
   const responderStatusLabel = $derived(
     respondedCount > 0
       ? `${respondedCount} responder${respondedCount === 1 ? '' : 's'} on the way`

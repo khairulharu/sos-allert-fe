@@ -14,6 +14,7 @@
   import {
     emergencyLabel,
     initialsFor,
+    responderMeta,
     timeAgo,
     distanceMeters,
     formatDistance,
@@ -24,6 +25,7 @@
     own = null,
     live = null,
     responded = null,
+    youId = null,
     busy = false,
     error = '',
     onclose,
@@ -53,6 +55,15 @@
       .filter(Boolean)
       .join(' · '),
   )
+
+  // Other responders on this alert, from RESPONDER_ADDED frames on this
+  // responder's channel. The caller is excluded and rendered from `responded`
+  // instead: their socket connects after POST /respond, so their own frame is
+  // usually missed.
+  const othersOnWay = $derived(
+    (track?.responders || []).filter((person) => !youId || person.user_id !== youId),
+  )
+  const onTheWayCount = $derived(othersOnWay.length + (responded ? 1 : 0))
   const statusLabel = $derived(
     responded
       ? 'You are on the way'
@@ -166,6 +177,54 @@
           </div>
         {/each}
       </div>
+
+      {#if onTheWayCount > 0}
+        <div class="mt-3.5">
+          <p class="px-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted">
+            On the way · {onTheWayCount}
+          </p>
+          <div class="card mt-2 divide-y divide-line/80 overflow-hidden">
+            {#if responded}
+              <div class="flex items-center gap-2.5 px-3.5 py-2.5">
+                <span
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#E9F7F1] text-[9px] font-bold text-[#087a54]"
+                  >You</span
+                >
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-[11.5px] font-semibold text-ink">You</p>
+                  {#if respondedLine}
+                    <p class="mt-0.5 truncate text-[10px] text-muted">{respondedLine}</p>
+                  {/if}
+                </div>
+                <span
+                  class="shrink-0 rounded-full bg-[#E9F7F1] px-2 py-1 text-[9px] font-semibold text-[#087a54]"
+                  >On the way</span
+                >
+              </div>
+            {/if}
+            {#each othersOnWay as person (person.user_id)}
+              <div class="flex items-center gap-2.5 px-3.5 py-2.5">
+                <span
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#F7E7C2] text-[9.5px] font-bold text-[#6b4a10]"
+                  >{initialsFor(person.name || 'Responder')}</span
+                >
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-[11.5px] font-semibold text-ink">
+                    {person.name || 'Responder'}
+                  </p>
+                  {#if responderMeta(person)}
+                    <p class="mt-0.5 truncate text-[10px] text-muted">{responderMeta(person)}</p>
+                  {/if}
+                </div>
+                <span
+                  class="shrink-0 rounded-full bg-[#F5F6F8] px-2 py-1 text-[9px] font-semibold text-ink/55"
+                  >On the way</span
+                >
+              </div>
+            {/each}
+          </div>
+        </div>
+      {/if}
 
       {#if error}
         <p class="mt-3 rounded-2xl bg-[#FFECEB] px-3.5 py-2.5 text-[11.5px] font-medium text-[#b3241d]">

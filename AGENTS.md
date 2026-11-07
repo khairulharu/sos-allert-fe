@@ -183,8 +183,10 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   learns who is on the way without waiting for the next inbox poll. Frames whose
   `alert_id` does not match the connected alert are ignored.
 - `src/lib/alertMeta.js` — `emergencyLabel`, `initialsFor`, `timeAgo`,
-  `formatDistance`, `formatEta`, and `distanceMeters` (haversine) shared by the
-  incoming sheet and Home banner.
+  `formatDistance`, `formatEta`, `responderMeta` (one "240 m away · ETA 3 min ·
+  answered 2 min ago" line from a `ResponderSummary`/`RESPONDER_ADDED` payload),
+  and `distanceMeters` (haversine) shared by the incoming sheet, Home banner and
+  the SOS screen.
 - `src/lib/stores.js` — session store. **Do not regress** `restoreSession()`:
   it must use `getToken()` (localStorage key `sos_alert_token`), never
   `user.id`. Using `user.id` caused every authenticated call after login to
@@ -256,8 +258,13 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   responder's tracking store and the `responded` record: the sheet stays open
   after `POST /respond` as the responder's live view (ETA line, the victim's
   moving pin on the map) and prefers an `ALERT_TRIAGE` re-classification over the
-  inbox payload, flagging it with a "Re-classified from the audio" chip. The app
-  drops it once the alert reaches a terminal status.
+  inbox payload, flagging it with a "Re-classified from the audio" chip. Its "On
+  the way" list shows the caller as "You" (ETA/distance from the respond
+  response) plus every other responder appended by `RESPONDER_ADDED` on this
+  channel, nearest first and with the caller filtered out by `youId` — their own
+  socket connects after `POST /respond`, so their own frame never arrives and
+  would otherwise duplicate the row. The app drops the sheet once the alert
+  reaches a terminal status.
 - `src/lib/components/AlertFlow.svelte` — describe → 10 s countdown → classify →
   trigger → triage → resolve. The countdown is two things at once. It is the
   cancel window: the alert is only POSTed when it runs out, so "Cancel alert" and

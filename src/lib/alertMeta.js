@@ -40,6 +40,21 @@ export function formatEta(seconds) {
   return `${minutes} min`
 }
 
+/**
+ * One-line summary for a responder en route, from a ResponderSummary or a
+ * RESPONDER_ADDED frame: "240 m away · ETA 3 min · answered 2 min ago".
+ * Distance and ETA are recorded when they answered, not live positions.
+ */
+export function responderMeta(person) {
+  return [
+    Number.isFinite(person?.distance_m) ? `${formatDistance(person.distance_m)} away` : '',
+    person?.eta_seconds ? `ETA ${formatEta(person.eta_seconds)}` : '',
+    Number.isFinite(person?.responded_at) ? `answered ${timeAgo(person.responded_at)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 /** Great-circle distance in metres between two {lat,lng} values. */
 export function distanceMeters(a, b) {
   const lat1 = Number(a?.lat ?? a?.latitude)

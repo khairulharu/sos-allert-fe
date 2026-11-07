@@ -2,10 +2,11 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `fb661d9` (browser Web Push: `webpush` config
-section, `push_subscriptions` table, `/api/push/*` endpoints) on top of
+Backend state at handoff: commit `2eca9b8` (audio-driven triage: pre-trigger
+`POST /api/sos/classify`, explicit trigger `severity`/`summary`, escalation
+re-fanout) on top of `fd080bb` (that feature), `fb661d9` (browser Web Push),
 `7e7ec3b` (X-Forwarded-For trust + locked CORS) and `dac6219` (location APIs,
-auth rate limit, audio STT). The mirrored API contract matches `fb661d9`.
+auth rate limit, audio STT). The mirrored API contract matches `2eca9b8`.
 
 ## Run
 
@@ -27,6 +28,24 @@ so reach the dev server at exactly `http://localhost:5173`. `http://127.0.0.1:51
 a LAN address (`npm run dev -- --host`), or `npm run preview` (port 4173) are
 refused by preflight until they are added to the `AllowOrigins` list in
 `../backend/internal/config/fiber.go`.
+
+### Production
+
+`https://allert.my.id` serves the built output (`dist/`), so a deploy is
+`git pull && npm run build` on the server. `VITE_API_URL` and `VITE_WS_URL` are
+compiled into the bundle (the live one carries `https://api.allert.my.id` and
+`wss://api.allert.my.id`), which means building without them silently points the
+site at `http://localhost:3000`. `index.html` is served `no-cache` and the assets
+are hashed, so a rebuild only needs a reload, and `public/sw.js` (push depends on
+it) is served from the root with no fetch handler — there is no stale app shell
+to clear.
+
+Check which build is live by grepping the served bundle, e.g. for a string from
+the newest commit:
+
+```bash
+curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
+```
 
 ## Backend contract (authoritative)
 

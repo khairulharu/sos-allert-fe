@@ -155,10 +155,10 @@
         radius: radiusM,
         color: '#FF3B30',
         weight: 1.5,
-        opacity: 0.35,
+        opacity: 0.55,
         dashArray: '4 6',
         fillColor: '#FF3B30',
-        fillOpacity: 0.05,
+        fillOpacity: 0.11,
         interactive: false,
       }).addTo(markersLayer)
     }

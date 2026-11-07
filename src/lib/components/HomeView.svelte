@@ -3,8 +3,6 @@
   import {
     Bell,
     ChevronDown,
-    ChevronRight,
-    ShieldCheck,
     MapPin,
     Phone,
     Send,
@@ -187,68 +185,6 @@
     </button>
   </div>
 
-  <!-- protection status -->
-  <section class="relative mt-4 overflow-hidden rounded-[26px] bg-[#101216] p-5 text-white">
-    <div
-      class="pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-safe/20 blur-3xl"
-    ></div>
-    <div class="pointer-events-none absolute -bottom-24 -left-10 h-44 w-44 rounded-full bg-[#2F6BFF]/15 blur-3xl"></div>
-
-    <div class="relative flex items-start justify-between">
-      <span class="grid h-11 w-11 place-items-center rounded-2xl bg-white/10 ring-1 ring-white/10">
-        <ShieldCheck size={22} strokeWidth={2.1} class="text-[#6EE7B7]" />
-      </span>
-      <span
-        class="inline-flex items-center gap-1.5 rounded-full bg-white/[0.07] px-2.5 py-1 text-[10px] font-semibold text-[#8FF0C6] ring-1 ring-white/10"
-      >
-        <span class="h-1.5 w-1.5 rounded-full bg-[#34D399] animate-live"></span>
-        Protected
-      </span>
-    </div>
-
-    <div class="relative mt-4">
-      <p class="text-[16px] font-semibold tracking-[-0.01em]">You're covered nearby</p>
-      <p class="mt-1 text-[12px] leading-relaxed text-white/55">
-        Live location is shared with trusted responders within 1&nbsp;km while protection is on.
-      </p>
-    </div>
-
-    <div class="relative mt-4 flex items-center justify-between border-t border-white/10 pt-3.5">
-      <div class="flex items-center gap-2">
-        <div class="flex -space-x-2">
-          {#if responderView.length > 0}
-            {#each responderView.slice(0, 3) as person}
-              <span
-                class="grid h-6 w-6 place-items-center rounded-full text-[8px] font-bold ring-2 ring-[#101216] {person.tone}"
-                >{person.initials}</span
-              >
-            {/each}
-          {:else}
-            <span
-              class="grid h-6 w-6 place-items-center rounded-full bg-white/15 text-[8px] font-bold text-white/60 ring-2 ring-[#101216]"
-              >—</span
-            >
-          {/if}
-        </div>
-        {#if responderView.length > 0}
-          <span class="text-[11px] font-medium text-white/60">{$responders.length} nearby</span>
-        {:else}
-          <span class="text-[11px] font-medium text-white/60"
-            >{$nearbyLoading ? 'Locating responders…' : 'No responders online'}</span
-          >
-        {/if}
-      </div>
-      <button
-        type="button"
-        onclick={() => onnavigate?.('contacts')}
-        class="inline-flex items-center gap-1 text-[11px] font-semibold text-white/85 transition hover:text-white"
-      >
-        Manage
-        <ChevronRight size={13} />
-      </button>
-    </div>
-  </section>
-
   <!-- incoming alert -->
   {#if incoming}
     <section
@@ -299,6 +235,7 @@
 
     <div class="mt-3">
       <MapCard
+        height="h-[300px]"
         onopen={() => onnavigate?.('contacts')}
         responders={$responders}
         own={$own}

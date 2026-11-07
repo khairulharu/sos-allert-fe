@@ -172,8 +172,8 @@ refused by preflight until they are added to the `AllowOrigins` list in
   `logout()`, which calls `DELETE /api/users` and clears the token + stored user,
   so signing out really revokes the session (previously it only reset the local
   flags and a reload logged the user straight back in).
-- `src/lib/components/HomeView.svelte` — protection card, responder count,
-  quick actions. Location is read-only here: `own`, `responders`,
+- `src/lib/components/HomeView.svelte` — quick actions, nearby responders,
+  recent activity. Location is read-only here: `own`, `responders`,
   `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, and the
   pill under the greeting shows the reverse-geocoded heartbeat location
   (`Locating…` → `Kuta, Badung`, `Location unavailable` when the heartbeat or
@@ -183,8 +183,10 @@ refused by preflight until they are added to the `AllowOrigins` list in
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no
   token). Props: `own` (`GET /api/location` payload), `responders`
   (`nearby` items), `focus` (incoming alert location; centers the map and draws
-  an amber pin), `live` (tracking store frame), `radiusM`, `showControls`,
-  `showRadiusDefault`. Draws the radius circle, blue own dot, generic masked
+  an amber pin), `live` (tracking store frame), `radiusM`, `height` (height
+  class; Home passes `h-[300px]`, the incoming sheet `h-[132px]`),
+  `showControls`, `showRadiusDefault`. Draws the radius circle (dashed
+  `#FF3B30`, 1.5 px, stroke 0.55 / fill 0.11), blue own dot, generic masked
   responder pins, and a pulsing red pin that follows `LOCATION_UPDATE`; the
   live pin is removed on terminal status. A `ResizeObserver` re-measures the
   container (`map.invalidateSize()`) so the map survives being hidden and shown.

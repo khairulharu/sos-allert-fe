@@ -167,6 +167,18 @@ refused by preflight until they are added to the `AllowOrigins` list in
   it must use `getToken()` (localStorage key `sos_alert_token`), never
   `user.id`. Using `user.id` caused every authenticated call after login to
   return 401 (fixed in commit `97dc741`).
+  `logout()` must revoke **the session this tab owns** — it reads
+  `getSessionToken()` (the in-memory token, never the shared localStorage) and
+  passes it to `auth.logout(token)`. The backend keeps a single token per user
+  row (`users.token`, rotated on every login, cleared on logout), so an account
+  has exactly one live session: re-reading localStorage after an `await` can
+  pick up the token another tab just logged in with and delete that fresh
+  session instead. A tab that already ended its session must not run its
+  sign-out again (see `onSessionExpired` in `App.svelte`).
+- `src/lib/components/AuthScreen.svelte` — sign in / create account. `submit()`
+  is guarded by `busy`: a double submit would rotate the account token twice and
+  leave this client holding a token the server no longer accepts. The optional
+  `notice` prop shows why the user landed back here (e.g. an expired session).
 - `src/App.svelte` — auth gate, geolocation heartbeat every 60 s, toast, and
   WS/inbox orchestration. On restore/login it calls `GET /api/sos/active` once
   and starts tracking the user's active alert; trigger passes the new id through
@@ -457,6 +469,13 @@ SOS shows a real OS notification even while the tab is in the background.
   backend widens the radius and notifies only the new responders, and the media
   response reports `escalated`/`recipients_added`. Pending backend items: native
   push/SMS credentials and Redis GEO TTL/cleanup.
+- One active session per account: the backend stores the token on the user row
+  (`users.token`), so logging in anywhere rotates it and revokes whatever session
+  the account had before — a second device, a second browser profile, the
+  installed home-screen app, or a double-submitted login form. The client then
+  sees 401 on its next request and (correctly) signs out, which is why an "it
+  logged me out by itself" report usually means a login happened elsewhere.
+  Multi-device needs a session table server-side (one row per token).
 - Incoming-alert semantics: `GET /api/sos/inbox` is the in-app fallback for push
   (it also feeds the sheet when Web Push is off/denied). WS tracking is per-alert
   and only authorizes the sender or a recorded responder, so the app polls the

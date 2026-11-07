@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store'
-import { auth, getStoredUser, getToken, setStoredUser, setToken } from './api.js'
+import { auth, getSessionToken, getStoredUser, getToken, setStoredUser, setToken } from './api.js'
 
 // Reactive session state shared across views.
 export const session = writable({
@@ -64,14 +64,20 @@ export async function register(id, password, name) {
 }
 
 export async function logout() {
-  try {
-    await auth.logout()
-  } catch (e) {
-    /* ignore network errors on logout */
-  }
+  // Revoke exactly the session this tab owns, and do it with a captured token:
+  // localStorage is shared between tabs, so re-reading it after an await can
+  // pick up a token another tab has just logged in with and delete that fresh
+  // session instead (the account keeps a single token server-side).
+  const token = getSessionToken()
   setToken(null)
   setStoredUser(null)
   session.set({ token: null, user: null, loading: false })
+  if (!token) return
+  try {
+    await auth.logout(token)
+  } catch (e) {
+    /* ignore network errors on logout */
+  }
 }
 
 export function restoreSession() {

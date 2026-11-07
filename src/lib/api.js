@@ -20,6 +20,12 @@ export function setToken(token) {
   else localStorage.removeItem(TOKEN_KEY)
 }
 
+// The token this tab holds in memory — never the one in localStorage, which is
+// shared with every other tab of this origin.
+export function getSessionToken() {
+  return cachedToken
+}
+
 export function getStoredUser() {
   try {
     return JSON.parse(localStorage.getItem(USER_KEY))
@@ -92,7 +98,13 @@ export const auth = {
   register: (id, password, name) =>
     request('POST', '/api/users', { id, password, name }),
   login: (id, password) => request('POST', '/api/users/_login', { id, password }),
-  logout: () => request('DELETE', '/api/users'),
+  logout: (token) =>
+    // `token: false` + an explicit header: the caller passes the session it owns
+    // so a token another tab wrote in the meantime is never revoked by mistake.
+    request('DELETE', '/api/users', undefined, {
+      token: false,
+      headers: token ? { Authorization: token } : {},
+    }),
   current: () => request('GET', '/api/users/_current'),
   update: (fields) => request('PATCH', '/api/users/_current', fields),
 }

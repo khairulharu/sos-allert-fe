@@ -10,7 +10,7 @@
   import AlertIncoming from '$lib/components/AlertIncoming.svelte'
   import AuthScreen from '$lib/components/AuthScreen.svelte'
   import { session, restoreSession, logout } from '$lib/stores.js'
-  import { location as locationApi, sos as sosApi } from '$lib/api.js'
+  import { location as locationApi, sos as sosApi, getSessionToken } from '$lib/api.js'
   import {
     tracking,
     responderTracking,
@@ -40,6 +40,10 @@
   let inboxPolling = false
   let inboxInitialised = false
   const dismissedAlerts = new Set()
+
+  // Set when a 401 ends the session so the auth screen can say why the user is
+  // back here instead of leaving it a mystery.
+  let authNotice = $state('')
 
   // Session gate: authenticated state.
   let authed = $state(false)
@@ -377,6 +381,7 @@
   }
 
   function onAuthSuccess() {
+    authNotice = ''
     const s = restoreSession()
     if (s) {
       authed = true
@@ -391,6 +396,7 @@
   }
 
   async function onSignOut() {
+    authNotice = ''
     // The server-side delete needs a valid token, and logout() revokes it.
     await disablePush()
     stopInboxPolling()
@@ -403,6 +409,13 @@
   }
 
   async function onSessionExpired() {
+    // A 401 for a session this tab already ended must not run again: it would
+    // revoke whatever token another tab has logged in with since, and claim the
+    // user was signed out when they were not.
+    if (!getSessionToken()) return
+    // The server no longer accepts this token: it was revoked by a sign-out or
+    // replaced by another login (the account keeps one token server-side).
+    authNotice = 'Your session ended — sign in again to keep getting SOS alerts.'
     // The token is already dead, so the DELETE 401s and the subscription is
     // cleaned up by the backend once the push service reports it gone (410).
     await disablePush()
@@ -411,6 +424,7 @@
     stopLocationHeartbeat()
     stopTracking()
     await logout()
+    currentUser = null
   }
 </script>
 
@@ -419,7 +433,7 @@
 </svelte:head>
 
 {#if !authed}
-  <AuthScreen onsuccess={onAuthSuccess} />
+  <AuthScreen onsuccess={onAuthSuccess} notice={authNotice} />
 {:else}
   <div class="relative flex min-h-dvh w-full items-center justify-center overflow-hidden bg-[#E7E9ED]">
     <!-- ambient backdrop -->

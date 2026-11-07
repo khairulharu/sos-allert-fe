@@ -4,7 +4,7 @@
   import { login, register } from '$lib/stores.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
 
-  let { onsuccess } = $props()
+  let { onsuccess, notice = '' } = $props()
 
   // Auth lockout is 15 minutes; used only when the browser cannot read
   // Retry-After (cross-origin CORS currently exposes just Content-Disposition).
@@ -44,6 +44,10 @@
   }
 
   async function submit() {
+    // A form submit can arrive twice (double tap, Enter plus click). The backend
+    // rotates the account token on every login, so a second request would leave
+    // this client holding a token the server no longer accepts.
+    if (busy) return
     error = ''
     hint = ''
     if (cooldown > 0) {
@@ -173,6 +177,11 @@
           </div>
         </label>
 
+        {#if notice}
+          <p class="rounded-2xl bg-[#FFF6E5] px-3.5 py-2.5 text-[11.5px] font-medium text-[#8a5a00]">
+            {notice}
+          </p>
+        {/if}
         {#if error}
           <p
             role="alert"

@@ -18,6 +18,7 @@
     Square,
   } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
+  import MapCard from './MapCard.svelte'
   import { MIC_HELP, micBlockReason, micErrorText, micPermissionState } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
@@ -112,6 +113,18 @@
   // overflowed and read as a second, overlapping copy of the label underneath.
   const TRIAGE_ICONS = { MEDICAL: HeartPulse, ACCIDENT: Car, DANGER: AlertTriangle }
   const TypeIcon = $derived(TRIAGE_ICONS[triageResult?.emergency_type] || AlertTriangle)
+  // Same tiers as the radius copy below the severity bar, so the circle on the
+  // map matches what the text claims.
+  const fanoutRadiusM = $derived(
+    triageResult?.severity >= 0.67 ? 5000 : triageResult?.severity >= 0.34 ? 2000 : 1000,
+  )
+  // The sender's own position for the map: the live tracking frame once the
+  // socket reports, the app's last fix before that.
+  const mapPosition = $derived(
+    Number.isFinite(live?.latitude) && Number.isFinite(live?.longitude)
+      ? { latitude: live.latitude, longitude: live.longitude }
+      : { latitude: coords.lat, longitude: coords.lng },
+  )
   const TRIAGE_COLORS = { MEDICAL: 'text-[#FFB3B3]', ACCIDENT: 'text-[#FFD580]', DANGER: 'text-[#FF8080]' }
   const TRIAGE_BG = { MEDICAL: 'from-[#FF4A3F] via-[#CC2019] to-[#991510]', ACCIDENT: 'from-[#FF8C00] via-[#CC6600] to-[#994400]', DANGER: 'from-[#B81710] via-[#99100A] to-[#6B0A06]' }
   const TRIAGE_BG_CARD = { MEDICAL: 'bg-[#FFECEB]', ACCIDENT: 'bg-[#FFF6E5]', DANGER: 'bg-[#FFE8E6]' }
@@ -900,6 +913,18 @@
           <MapPin size={12} class="text-sos" />
           {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} · Sharing live location
         </p>
+      </div>
+
+      <!-- WHERE HELP IS HEADED: the alert had no map at all before, so the
+           sender could not see themselves, the fan-out radius or the live pin. -->
+      <div class="mt-4">
+        <MapCard
+          height="h-[168px]"
+          own={mapPosition}
+          radiusM={fanoutRadiusM}
+          radiusLabel={`Live · ${fanoutRadiusM >= 1000 ? `${fanoutRadiusM / 1000} km` : `${fanoutRadiusM} m`} radius`}
+          showFooter={false}
+        />
       </div>
 
       <!-- AI TRIAGE RESULT CARD -->

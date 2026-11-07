@@ -26,13 +26,28 @@ self.addEventListener('push', (event) => {
 })
 
 self.addEventListener('notificationclick', (event) => {
+  const payload = event.notification.data || {}
+  const alertId = payload.alert_id || ''
   event.notification.close()
-  const url = event.notification.data?.url || '/'
+
+  // Carry the alert id to the app: an open window gets it as a message, a cold
+  // start as ?alert=. Without it the first inbox poll can only show a banner, so
+  // tapping the notification appeared to do nothing.
+  const base = payload.url || '/'
+  const url = alertId
+    ? `${base}${base.includes('?') ? '&' : '?'}alert=${encodeURIComponent(alertId)}`
+    : base
+
   event.waitUntil(
     (async () => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
       for (const client of clients) {
-        if ('focus' in client) return client.focus()
+        if ('focus' in client) {
+          if (alertId && 'postMessage' in client) {
+            client.postMessage({ type: 'sos-alert', alert_id: alertId })
+          }
+          return client.focus()
+        }
       }
       return self.clients.openWindow(url)
     })(),

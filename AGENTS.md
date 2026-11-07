@@ -141,8 +141,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   instead of reused. `PUSH_HELP` holds the user-facing copy.
 - `public/sw.js` — the service worker Vite serves from the root: `push` →
   `showNotification` (`title`/`body`/`tag = alert_id`, `requireInteraction`,
-  `data.url`), `notificationclick` → focus an existing window or
-  `openWindow('/')`.
+  `data.url`), `notificationclick` → focus an existing window (messaging it
+  `{type:'sos-alert', alert_id}`) or `openWindow('/?alert=<id>')`, so the app can
+  open that alert's sheet instead of only a banner.
 - `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
   by the auth and SOS 429 UIs.
 - `src/lib/place.js` — reverse geocoding for the header location pill
@@ -203,7 +204,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   and starts tracking the user's active alert; trigger passes the new id through
   `ontrack`. It also polls `GET /api/sos/inbox` every 12 s: alerts already
   present on the first poll show as a banner, new alerts auto-open the sheet,
-  and dismissing records the id so it is not shown again. `POST /respond` uses
+  and dismissing records the id so it is not shown again. A tapped push
+  notification names its alert (`?alert=<id>` on a cold start, a `sos-alert`
+  service-worker message while open), and that sheet opens immediately — without
+  it the first poll only drew a banner, so tapping the notification appeared to
+  do nothing. `POST /respond` uses
   browser coords → stored heartbeat → fallback; success starts the responder
   WS channel and shows ETA/distance. Terminal statuses raise a toast.
   Fallback coords are Bali (`-8.65, 115.22`) if browser geolocation is denied;
@@ -274,7 +279,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   of the clip, and the transcription note (`disabled`/`too_large`/`empty`/
   `failed`, hidden once the level really came from the audio). When the media
   response escalated the fan-out it also adds "+N responders at the wider radius"
-  and the notified count includes them. The sender's only view of who is coming
+  and the notified count includes them. The active screen carries its own map
+  (168 px: the live pin from the tracking socket, the fan-out radius circle at
+  the same tier the text claims, recenter and radius controls) because the sheet
+  covers Home, which was the only map — a sender could not see the alert on any
+  map while it was open. The sender's only view of who is coming
   is a 10 s poll of `GET /api/sos/:alertId` for `responders_en_route`, shown as
   "N responders on the way" next to the notified count.
   Ending an active alert takes two taps — "I'm safe — end alert" arms
@@ -493,6 +502,14 @@ SOS shows a real OS notification even while the tab is in the background.
   backend widens the radius and notifies only the new responders, and the media
   response reports `escalated`/`recipients_added`. Pending backend items: native
   push/SMS credentials and Redis GEO TTL/cleanup.
+- The Home map can only show people who are actually publishing heartbeats: the
+  backend drops candidates with no `users:last_seen` entry or an entry older than
+  `staleThreshold` (2 minutes, `trigger_sos_usecase.go`), excludes the caller, and
+  needs the caller's own heartbeat (`GET /api/location/nearby` answers `404`
+  without one). So a device whose app is closed — or which only wakes up for push
+  — never appears as a nearby pin, and an empty map is usually that rule rather
+  than a rendering bug. Responder pins also share the masked ~100 m grid, so a
+  pin can sit under the caller's own dot.
 - The sender cannot see *who* is coming: the API exposes `responders_en_route`
   (a count) on `AlertDetailResponse` and nothing else — no responder names,
   distances or ETA, and no WS frame for them (`POST /respond` returns the ETA to

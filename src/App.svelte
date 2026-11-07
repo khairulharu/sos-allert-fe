@@ -31,6 +31,9 @@
   // Set once the user answered the alert in the sheet: the sheet stays open as
   // the responder's live view for that alert.
   let respondedAlert = $state(null)
+  // Alert id carried by a tapped push notification (?alert= on a cold start, or
+  // a service-worker message while the app is open).
+  let focusAlertId = $state(null)
   let responding = $state(false)
   let respondError = $state('')
   let toast = $state('')
@@ -50,6 +53,13 @@
   let currentUser = $state(null)
 
   onMount(() => {
+    // Arriving from a notification tap: the service worker appends the alert id
+    // so the matching sheet opens instead of a bare banner. Clean the URL after.
+    const wanted = new URLSearchParams(location.search).get('alert')
+    if (wanted) {
+      focusAlertId = wanted
+      history.replaceState({}, '', location.pathname + location.hash)
+    }
     const restored = restoreSession()
     if (restored) {
       authed = true
@@ -185,7 +195,20 @@
         (pendingAlert && visible.find((alert) => alert.alert_id === pendingAlert.alert_id)) ||
         null
 
-      if (incomingOpen && current) {
+      // A tapped push notification names its alert: open that sheet straight
+      // away, even on a cold start where the first poll would only show a banner.
+      const pushed = focusAlertId
+        ? active.find((alert) => alert.alert_id === focusAlertId) || null
+        : null
+      focusAlertId = null
+
+      if (pushed) {
+        dismissedAlerts.delete(pushed.alert_id)
+        pendingAlert = pushed
+        incomingOpen = true
+        respondError = ''
+        inboxInitialised = true
+      } else if (incomingOpen && current) {
         // Keep the sheet stable while the user is reading it.
         pendingAlert = current
       } else if (
@@ -229,9 +252,16 @@
   }
 
   // Returning to the tab (e.g. after clicking a push notification) surfaces a
-  // fresh alert without waiting for the next tick.
+  // fresh alert without waiting for the next tick. The service worker also names
+  // the alert the user tapped, so its sheet opens rather than just a banner.
   function onVisibilityChange() {
     if (!document.hidden) pollInbox()
+  }
+
+  function onServiceWorkerMessage(event) {
+    if (event.data?.type !== 'sos-alert') return
+    focusAlertId = event.data.alert_id || null
+    if (focusAlertId) pollInbox()
   }
 
   function startInboxPolling() {
@@ -241,14 +271,17 @@
       if (!document.hidden) pollInbox()
     }, INBOX_POLL_MS)
     document.addEventListener('visibilitychange', onVisibilityChange)
+    navigator.serviceWorker?.addEventListener('message', onServiceWorkerMessage)
   }
 
   function stopInboxPolling() {
     clearInterval(inboxTimer)
     inboxTimer = null
     document.removeEventListener('visibilitychange', onVisibilityChange)
+    navigator.serviceWorker?.removeEventListener('message', onServiceWorkerMessage)
     inboxPolling = false
     inboxInitialised = false
+    focusAlertId = null
     pendingAlert = null
     respondedAlert = null
     incomingOpen = false

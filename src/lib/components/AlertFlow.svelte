@@ -117,12 +117,18 @@
   // answers with `triage` and the tracking socket broadcasts ALERT_TRIAGE.
   // Both land here, so the card, the severity bar and the radius copy all
   // follow the newest classification.
+  //
+  // A payload with nothing to classify (STT disabled, no speech detected) only
+  // carries `transcription_status`, so it must not invent a level from the
+  // previous state nor claim the audio produced the level on screen.
   function applyTriage(next, fromAudio = false) {
     if (!next) return
-    const severity = Number.isFinite(next.severity) ? next.severity : triageResult?.severity
+    const hasType = !!next.emergency_type
+    const hasSeverity = Number.isFinite(next.severity)
+    if (!hasType && !hasSeverity) return
     triageResult = {
       emergency_type: next.emergency_type || triageResult?.emergency_type || 'DANGER',
-      severity: Number.isFinite(severity) ? severity : 0.5,
+      severity: hasSeverity ? next.severity : (triageResult?.severity ?? 0.5),
       summary: next.summary || triageResult?.summary || '',
     }
     if (fromAudio) triageFromAudio = true

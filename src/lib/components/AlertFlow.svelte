@@ -244,10 +244,12 @@
     } catch (err) {
       if (err?.status === 429) {
         rateLimited = true
+        // The backend quotes the limit it enforces ("max N triggers per hour"),
+        // so never invent a number here: a stale copy would contradict it.
+        const detail = err?.message && !/^HTTP \d+$/.test(err.message) ? err.message : null
+        const limit = detail || 'SOS limit reached. Try again later.'
         const wait = retrySeconds(err)
-        errorMsg = wait
-          ? `SOS limit reached. Try again in ${formatCooldown(wait)}.`
-          : err?.message || 'SOS limit reached: max 3 triggers per hour.'
+        errorMsg = wait ? `${limit} Try again in ${formatCooldown(wait)}.` : limit
       } else {
         errorMsg = err?.message || 'Failed to send SOS. Check connection.'
       }
@@ -1139,7 +1141,7 @@
         <p class="mt-2 max-w-[270px] text-[12.5px] leading-relaxed text-white/55">
           {errorMsg ||
             (rateLimited
-              ? 'SOS limit reached: max 3 triggers per hour.'
+              ? 'SOS limit reached. Try again later.'
               : 'The alert did not go through. Please try again.')}
         </p>
         <p class="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[10.5px] text-white/50 ring-1 ring-white/10">

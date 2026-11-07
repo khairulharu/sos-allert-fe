@@ -21,6 +21,7 @@
   } from '$lib/tracking.js'
   import { formatDistance, formatEta } from '$lib/alertMeta.js'
   import { micPermissionState, requestMicAccess } from '$lib/mic.js'
+  import { browserPosition, startNearbyPolling, stopNearbyPolling } from '$lib/geo.js'
 
   let tab = $state('home')
   let sosOpen = $state(false)
@@ -49,6 +50,7 @@
       primeMicrophone()
       syncActiveTracking()
       startInboxPolling()
+      startNearbyPolling({ onSessionExpired })
     }
   })
 
@@ -232,17 +234,6 @@
     respondError = ''
   }
 
-  function browserPosition() {
-    return new Promise((resolve) => {
-      if (!navigator.geolocation) return resolve(null)
-      navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        () => resolve(null),
-        { enableHighAccuracy: true, timeout: 4000, maximumAge: 60000 },
-      )
-    })
-  }
-
   async function responseCoords() {
     const pos = await browserPosition()
     if (pos) return pos
@@ -312,14 +303,12 @@
 
   function startLocationHeartbeat() {
     if (heartbeatTimer) return
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => (lastCoord = { lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        () => {},
-        { enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 },
-      )
-    }
+    // One shared browser fix (src/lib/geo.js) feeds both the heartbeat and the
+    // nearby map, so the two writers can never publish different buckets, and
+    // the GPS is asked at most once per tick instead of on every view mount.
     const send = async () => {
+      const pos = await browserPosition()
+      if (pos) lastCoord = pos
       try {
         await locationApi.update(lastCoord.lat, lastCoord.lng)
       } catch {
@@ -328,6 +317,11 @@
     }
     send()
     heartbeatTimer = setInterval(send, 60000)
+  }
+
+  function stopLocationHeartbeat() {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
   }
 
   // Microphone access is requested in the same breath as the location one, so
@@ -361,11 +355,14 @@
       primeMicrophone()
       syncActiveTracking()
       startInboxPolling()
+      startNearbyPolling({ onSessionExpired })
     }
   }
 
   function onSignOut() {
     stopInboxPolling()
+    stopNearbyPolling()
+    stopLocationHeartbeat()
     stopTracking()
     authed = false
     currentUser = null
@@ -374,6 +371,8 @@
 
   async function onSessionExpired() {
     stopInboxPolling()
+    stopNearbyPolling()
+    stopLocationHeartbeat()
     stopTracking()
     await logout()
   }
@@ -399,29 +398,34 @@
       class="relative z-10 flex h-dvh w-full max-w-[430px] flex-col overflow-hidden bg-canvas sm:h-[min(884px,calc(100dvh_-_32px))] sm:rounded-[44px] sm:ring-1 sm:ring-black/10 sm:shadow-[0_50px_120px_-40px_rgba(13,15,19,0.55)]"
     >
       <main bind:this={scrollEl} class="relative min-h-0 flex-1 overflow-y-auto pb-36 no-scrollbar">
+        <!-- Home stays mounted (hidden, not destroyed) so returning to it does
+             not rebuild the Leaflet map or restart the location flow. -->
+        <div class:hidden={tab !== 'home'}>
+          <HomeView
+            user={currentUser}
+            onnavigate={navigate}
+            onnotify={notify}
+            incoming={pendingAlert}
+            onviewalert={() => (incomingOpen = true)}
+            ondismissincoming={dismissIncoming}
+            onsignout={onSignOut}
+            coords={lastCoord}
+            live={mapLive}
+          />
+        </div>
+
         {#key tab}
-          <div in:fly={{ y: 10, duration: 260, opacity: 0.4 }}>
-            {#if tab === 'home'}
-              <HomeView
-                user={currentUser}
-                onnavigate={navigate}
-                onnotify={notify}
-                incoming={pendingAlert}
-                onviewalert={() => (incomingOpen = true)}
-                ondismissincoming={dismissIncoming}
-                onsignout={onSignOut}
-                coords={lastCoord}
-                live={mapLive}
-                onsessionexpired={onSessionExpired}
-              />
-            {:else if tab === 'alerts'}
-              <AlertsView />
-            {:else if tab === 'contacts'}
-              <ContactsView />
-            {:else}
-              <ProfileView user={currentUser} onsignout={onSignOut} />
-            {/if}
-          </div>
+          {#if tab !== 'home'}
+            <div in:fly={{ y: 10, duration: 260, opacity: 0.4 }}>
+              {#if tab === 'alerts'}
+                <AlertsView />
+              {:else if tab === 'contacts'}
+                <ContactsView />
+              {:else}
+                <ProfileView user={currentUser} onsignout={onSignOut} />
+              {/if}
+            </div>
+          {/if}
         {/key}
       </main>
 

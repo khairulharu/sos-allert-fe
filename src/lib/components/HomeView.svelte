@@ -15,9 +15,9 @@
     Siren,
   } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
-  import { contacts, location as locationApi } from '$lib/api.js'
-  import { place as placeStore } from '$lib/stores.js'
-  import { cachedPlace, resolvePlace } from '$lib/place.js'
+  import { contacts } from '$lib/api.js'
+  import { place } from '$lib/stores.js'
+  import { own, responders, nearbyError, nearbyLoading, nearbyRadius } from '$lib/geo.js'
   import { emergencyLabel, distanceMeters, formatDistance } from '$lib/alertMeta.js'
 
   let {
@@ -29,7 +29,6 @@
     onnotify,
     live = null,
     coords = { lat: -8.65, lng: 115.22 },
-    onsessionexpired,
   } = $props()
 
   const name = $derived(user?.name || user?.fullName || 'there')
@@ -66,8 +65,8 @@
   })
 
   // ---- live responder map ----
-  const POLL_MS = 15000
-  const NEARBY_RADIUS_M = 1000
+  // Heartbeat, nearby lookup, and polling live in src/lib/geo.js so a tab
+  // switch reuses them instead of re-running the whole location flow.
   const RESPONDER_TONES = [
     'bg-[#F2C879] text-[#6b4a10]',
     'bg-[#9DB8F5] text-[#1e3a8a]',
@@ -75,62 +74,18 @@
     'bg-[#F3B3C6] text-[#831843]',
   ]
 
-  let responders = $state([])
   const alertHistory = $state([])
-  let own = $state(null)
-  let nearbyRadius = $state(NEARBY_RADIUS_M)
-  let nearbyError = $state('')
-  let nearbyLoading = $state(true)
-  let refreshing = false
-  let ownSynced = false
-  let pollTimer
 
-  // The header pill shows where the heartbeat actually is: coordinates go
-  // through the reverse geocoder once per ~110 m bucket (src/lib/place.js) and
-  // the result is shared with the Profile screen.
-  let placeText = $state('')
-  let placeResolving = $state(false)
-
-  $effect(() => {
-    const latitude = Number(own?.latitude)
-    const longitude = Number(own?.longitude)
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      placeText = ''
-      placeResolving = false
-      placeStore.set('')
-      return
-    }
-
-    const cached = cachedPlace(latitude, longitude)
-    if (cached) {
-      placeText = cached
-      placeResolving = false
-      placeStore.set(cached)
-      return
-    }
-
-    let cancelled = false
-    placeResolving = true
-    resolvePlace(latitude, longitude)
-      .then((label) => {
-        if (cancelled) return
-        placeText = label || ''
-        placeStore.set(label || '')
-      })
-      .finally(() => {
-        if (!cancelled) placeResolving = false
-      })
-    return () => {
-      cancelled = true
-    }
-  })
-
+  // The header pill shows where the heartbeat actually is. geo.js resolves the
+  // label once per ~110 m bucket (src/lib/place.js), keeps it warm across tab
+  // switches, and shares it with the Profile screen — so navigating never
+  // blanks it back to "Locating…".
   const areaLabel = $derived(
-    placeText || (placeResolving || nearbyLoading ? 'Locating…' : 'Location unavailable'),
+    $place || ($nearbyLoading ? 'Locating…' : 'Location unavailable'),
   )
 
   const responderView = $derived(
-    responders.map((person, i) => ({
+    $responders.map((person, i) => ({
       ...person,
       initials: 'R',
       tone: RESPONDER_TONES[i % RESPONDER_TONES.length],
@@ -151,95 +106,6 @@
     if (seconds < 60) return 'just now'
     return `${Math.round(seconds / 60)} min ago`
   }
-
-  function browserPosition() {
-    return new Promise((resolve) => {
-      if (!navigator.geolocation) return resolve(null)
-      navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        () => resolve(null),
-        { enableHighAccuracy: true, timeout: 6000, maximumAge: 30000 },
-      )
-    })
-  }
-
-  function normalizeCoords(value) {
-    const lat = Number(value?.lat ?? value?.latitude)
-    const lng = Number(value?.lng ?? value?.longitude)
-    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null
-  }
-
-  async function readOwnLocation() {
-    try {
-      return await locationApi.get()
-    } catch (err) {
-      if (err.status === 401) throw err
-      if (err.status !== 404) throw err
-      return null
-    }
-  }
-
-  async function ensureOwnLocation() {
-    // Sync an accurate browser position once, then read the stored heartbeat.
-    if (!ownSynced) {
-      ownSynced = true
-      const pos = await browserPosition()
-      if (pos) {
-        try {
-          await locationApi.update(pos.lat, pos.lng)
-        } catch (err) {
-          if (err.status === 401) throw err
-        }
-      }
-    }
-
-    const stored = await readOwnLocation()
-    if (stored) return stored
-
-    // No heartbeat yet: PUT the app's last known coordinates, then retry.
-    const fallback = normalizeCoords(coords)
-    if (!fallback) return null
-    await locationApi.update(fallback.lat, fallback.lng)
-    return await readOwnLocation()
-  }
-
-  async function refreshNearby() {
-    if (refreshing) return
-    refreshing = true
-    try {
-      const stored = await ensureOwnLocation()
-      if (stored) own = stored
-
-      if (!stored) {
-        responders = []
-        nearbyError = 'Waiting for a location heartbeat…'
-        return
-      }
-
-      const data = await locationApi.nearby(NEARBY_RADIUS_M)
-      responders = Array.isArray(data?.responders) ? data.responders : []
-      nearbyRadius = Number(data?.radius_m) || NEARBY_RADIUS_M
-      nearbyError = ''
-    } catch (err) {
-      if (err.status === 401) {
-        clearInterval(pollTimer)
-        onsessionexpired?.()
-        return
-      }
-      nearbyError = err?.message || 'Could not load nearby responders.'
-    } finally {
-      refreshing = false
-      nearbyLoading = false
-    }
-  }
-
-  onMount(() => {
-    refreshNearby()
-    pollTimer = setInterval(() => {
-      if (!document.hidden) refreshNearby()
-    }, POLL_MS)
-    return () => clearInterval(pollTimer)
-  })
 
   const now = new Date()
   const hour = now.getHours()
@@ -365,10 +231,10 @@
           {/if}
         </div>
         {#if responderView.length > 0}
-          <span class="text-[11px] font-medium text-white/60">{responders.length} nearby</span>
+          <span class="text-[11px] font-medium text-white/60">{$responders.length} nearby</span>
         {:else}
           <span class="text-[11px] font-medium text-white/60"
-            >{nearbyLoading ? 'Locating responders…' : 'No responders online'}</span
+            >{$nearbyLoading ? 'Locating responders…' : 'No responders online'}</span
           >
         {/if}
       </div>
@@ -434,10 +300,10 @@
     <div class="mt-3">
       <MapCard
         onopen={() => onnavigate?.('contacts')}
-        responders={responders}
-        own={own}
+        responders={$responders}
+        own={$own}
         live={live}
-        radiusM={nearbyRadius}
+        radiusM={$nearbyRadius}
       />
     </div>
   </section>
@@ -499,7 +365,7 @@
             >
           </div>
         {/each}
-      {:else if nearbyLoading}
+      {:else if $nearbyLoading}
         <div class="px-4 py-8 text-center">
           <p class="text-[12.5px] font-semibold text-ink">Locating responders…</p>
           <p class="mt-1 text-[11px] text-muted">Using your latest heartbeat.</p>
@@ -507,7 +373,7 @@
       {:else}
         <div class="px-4 py-8 text-center">
           <p class="text-[12.5px] font-semibold text-ink">No responders nearby</p>
-          <p class="mt-1 text-[11px] text-muted">{nearbyError || 'Coverage updates in real time.'}</p>
+          <p class="mt-1 text-[11px] text-muted">{$nearbyError || 'Coverage updates in real time.'}</p>
         </div>
       {/if}
     </div>

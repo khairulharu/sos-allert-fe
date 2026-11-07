@@ -73,6 +73,18 @@ cd ../backend && go run cmd/web/main.go
   bucketed to 3 decimals (~110 m), answers cached in localStorage for 7 days
   and deduped per bucket, so a wandering heartbeat does not re-ask the
   provider. `resolvePlace()` returns `"Kuta, Badung"`-style labels or `null`.
+- `src/lib/geo.js` — session-scoped location state, owned once rather than per
+  view: `own` (`GET /api/location` heartbeat), `responders`, `nearbyRadius`,
+  `nearbyLoading`, `nearbyError`. `startNearbyPolling({ onSessionExpired })` /
+  `stopNearbyPolling()` mirror the inbox poller and are driven by `App.svelte`
+  on restore/login and logout/`401`. `refreshNearby()` reads the stored
+  heartbeat (`404` → publishes one browser fix, then re-reads) and calls
+  `location.nearby(1000)`; concurrent callers share one in-flight request.
+  `browserPosition()` is the app's only geolocation call site: it caches the
+  last fix for 45 s, dedupes concurrent askers, and falls back to the last known
+  fix when a new acquisition fails. It also subscribes to `own` and publishes
+  the reverse-geocoded label into the `place` store (src/lib/place.js), without
+  blanking a known label when `own` is transiently empty.
 - `src/lib/mic.js` — microphone permission, handled like the location prompt.
   `micBlockReason()` answers first (`insecure` when `isSecureContext` is false,
   where `navigator.mediaDevices` does not even exist, else `unsupported`), then
@@ -104,23 +116,30 @@ cd ../backend && go run cmd/web/main.go
   browser coords → stored heartbeat → fallback; success starts the responder
   WS channel and shows ETA/distance. Terminal statuses raise a toast.
   Fallback coords are Bali (`-8.65, 115.22`) if browser geolocation is denied;
-  heartbeat errors are currently swallowed. The microphone permission is primed
-  once per session (`primeMicrophone` → `$lib/mic.js`) next to the location
-  request, so a first-time browser dialog never lands mid-SOS.
+  heartbeat errors are currently swallowed. The heartbeat awaits
+  `browserPosition()` (`$lib/geo.js`, shared with the map) before each `PUT`, so
+  the two writers can never publish different coordinates. It also starts/stops
+  `startNearbyPolling()`/`stopNearbyPolling()` with the session, and keeps
+  `HomeView` mounted (hidden) so tab switches do not rebuild the map or re-run
+  the location flow. The microphone permission is primed once per session
+  (`primeMicrophone` → `$lib/mic.js`) next to the location request, so a
+  first-time browser dialog never lands mid-SOS.
 - `src/lib/components/HomeView.svelte` — protection card, responder count,
-  quick actions. The pill under the greeting shows the reverse-geocoded
-  heartbeat location (`Locating…` → `Kuta, Badung`, `Location unavailable` when
-  the heartbeat or the geocoder has no answer) and publishes it to the `place`
-  store for `ProfileView`. Also owns the nearby polling: syncs own heartbeat, calls
-  `location.nearby(1000)` every 15 s (skipped while the tab is hidden), and
-  calls `onsessionexpired` on `401` so `App.svelte` logs out.
+  quick actions. Location is read-only here: `own`, `responders`,
+  `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, and the
+  pill under the greeting shows the reverse-geocoded heartbeat location
+  (`Locating…` → `Kuta, Badung`, `Location unavailable` when the heartbeat or
+  the geocoder has no answer) from the shared `place` store. It no longer owns
+  a poller or geolocation call, and `App.svelte` keeps it mounted (hidden) so
+  returning to Home reuses the same Leaflet map instead of rebuilding it.
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no
   token). Props: `own` (`GET /api/location` payload), `responders`
   (`nearby` items), `focus` (incoming alert location; centers the map and draws
   an amber pin), `live` (tracking store frame), `radiusM`, `showControls`,
   `showRadiusDefault`. Draws the radius circle, blue own dot, generic masked
   responder pins, and a pulsing red pin that follows `LOCATION_UPDATE`; the
-  live pin is removed on terminal status.
+  live pin is removed on terminal status. A `ResizeObserver` re-measures the
+  container (`map.invalidateSize()`) so the map survives being hidden and shown.
 - `src/lib/components/AlertIncoming.svelte` — real inbox alert sheet. Receives
   one `AlertDetailResponse`, computes approximate distance from own coords to
   the masked location, and calls the app's respond handler. No demo copy.
@@ -190,16 +209,23 @@ backend name lookup later (privacy decision).
 ## Responder map (implemented)
 
 1. `location.get()` + `location.nearby()` live in `api.js`.
-2. `HomeView` syncs an accurate browser position once, then reads the stored
-   heartbeat. If `GET /api/location` is `404`, it `PUT`s the app's last known
-   coordinates and retries `GET`; it never blocks on geolocation.
-3. `HomeView` polls `nearby(1000)` every 15 s, skipping ticks while the tab is
-   hidden. Pins and the list update reactively.
+2. `geo.refreshNearby()` reads the stored heartbeat. If `GET /api/location` is
+   `404`, it publishes one browser fix with `PUT` and retries `GET`; it never
+   blocks the view on geolocation, and a failing fix falls back to the last
+   known one.
+3. `geo.startNearbyPolling()` polls `nearby(1000)` every 15 s, skipping ticks
+   while the tab is hidden and refreshing immediately when the tab becomes
+   visible again. Pins and the list update reactively from the `geo` stores.
 4. `MapCard.svelte` is Leaflet + OSM, centered on own coords (or `focus` for
    an incoming alert), with radius circle, recenter, and radius toggle controls.
    It keeps the `max-w-[430px]` shell and existing card styling.
-5. `401` from location APIs invokes `onsessionexpired` → `logout()` in
-   `App.svelte`, returning to the auth screen.
+5. `401` from location APIs stops the poller and invokes the session-expired
+   handler → `logout()` in `App.svelte`, returning to the auth screen.
+
+Switching tabs must not re-run the location flow: `HomeView` stays mounted
+(`hidden`) and reads the `geo` stores, and `App.svelte` owns the polling for the
+session, so a round of tab switches issues no `/api/location*` request and asks
+for no new geolocation fix.
 
 Remaining map work: backend name lookup (privacy decision) for friendly labels
 and a fullscreen/responder-detail view.

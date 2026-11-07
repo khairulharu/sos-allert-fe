@@ -25,6 +25,7 @@
   let map = null
   let markersLayer = null
   let liveMarker = null
+  let resizeObserver = null
   let centered = false
   let showRadius = $state(untrack(() => showRadiusDefault))
 
@@ -199,7 +200,15 @@
     draw()
     syncLiveMarker()
 
+    // HomeView stays mounted across tab switches (hidden instead of destroyed),
+    // so the container goes 0 → full size on the way back and Leaflet has to
+    // re-measure before it can place tiles.
+    resizeObserver = new ResizeObserver(() => map?.invalidateSize())
+    resizeObserver.observe(mapEl)
+
     return () => {
+      resizeObserver?.disconnect()
+      resizeObserver = null
       liveMarker = null
       map?.remove()
       map = null

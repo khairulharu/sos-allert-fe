@@ -96,6 +96,10 @@ function createChannel() {
       return
     }
 
+    // Every frame names its alert; one from another alert (a stale socket, a
+    // server-side mix-up) must not overwrite this channel's state.
+    if (message?.alert_id && currentAlertId && message.alert_id !== currentAlertId) return
+
     if (message?.type === 'LOCATION_UPDATE') {
       if (Number.isFinite(message.latitude) && Number.isFinite(message.longitude)) {
         patch({

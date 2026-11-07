@@ -111,6 +111,16 @@ export const sos = {
     request('POST', '/api/sos', fields, {
       headers: { 'X-Idempotency-Key': idempotencyKey || crypto?.randomUUID?.() || `sos-${Date.now()}-${Math.random().toString(36).slice(2)}` },
     }),
+  // Pre-trigger audio classification: nothing is persisted, the caller is
+  // expected to send `emergency_type`/`severity`/`summary` back in the trigger
+  // body so the first fan-out already uses the audio level. `503` when STT is
+  // not configured, `502` when the provider fails — both are meant to be
+  // swallowed so the SOS still goes out on the description triage.
+  classify: (blob, filename = 'sos-classify.webm') => {
+    const form = new FormData()
+    form.append('file', blob, filename)
+    return request('POST', '/api/sos/classify', form)
+  },
   active: () => request('GET', '/api/sos/active'),
   inbox: () => request('GET', '/api/sos/inbox'),
   get: (alertId) => request('GET', `/api/sos/${alertId}`),

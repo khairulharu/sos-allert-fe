@@ -28,6 +28,9 @@
   let sosOpen = $state(false)
   let incomingOpen = $state(false)
   let pendingAlert = $state(null)
+  // Set once the user answered the alert in the sheet: the sheet stays open as
+  // the responder's live view for that alert.
+  let respondedAlert = $state(null)
   let responding = $state(false)
   let respondError = $state('')
   let toast = $state('')
@@ -106,6 +109,12 @@
             ? 'The nearby SOS was cancelled.'
             : 'The nearby SOS expired.',
       )
+      // Nothing left to watch: drop the responder's live sheet with it.
+      if (respondedAlert && respondedAlert.alert_id === value.alertId) {
+        incomingOpen = false
+        pendingAlert = null
+        respondedAlert = null
+      }
     }
     if (value.alertId !== responderTrackedId) responderTrackedStatus = null
     if (value.status) responderTrackedStatus = value.status
@@ -175,6 +184,13 @@
       if (incomingOpen && current) {
         // Keep the sheet stable while the user is reading it.
         pendingAlert = current
+      } else if (
+        incomingOpen &&
+        respondedAlert &&
+        pendingAlert?.alert_id === respondedAlert.alert_id
+      ) {
+        // Already answered: the alert drops out of `visible` (the caller is a
+        // participant now), but the sheet stays up as the live view.
       } else {
         const changed = newest?.alert_id !== pendingAlert?.alert_id
         pendingAlert = newest
@@ -230,6 +246,7 @@
     inboxPolling = false
     inboxInitialised = false
     pendingAlert = null
+    respondedAlert = null
     incomingOpen = false
     respondError = ''
     responding = false
@@ -241,6 +258,7 @@
     if (pendingAlert?.alert_id) dismissedAlerts.add(pendingAlert.alert_id)
     incomingOpen = false
     pendingAlert = null
+    respondedAlert = null
     respondError = ''
   }
 
@@ -272,11 +290,13 @@
       const result = await sosApi.respond(alert.alert_id, pos.lat, pos.lng)
 
       dismissedAlerts.add(alert.alert_id)
-      incomingOpen = false
-      pendingAlert = null
-
+      // Keep the sheet open: the responder now has a live stream for this alert
+      // (responderTracking), so it is the only place that can show a
+      // re-classification, the moving pin and the terminal state.
       const eta = formatEta(Number(result?.eta_seconds))
       const distance = formatDistance(Number(result?.victim_distance_meters))
+      respondedAlert = { alert_id: alert.alert_id, eta, distance }
+
       notify(
         ["You're on the way", eta ? `ETA ${eta}` : '', distance ? `${distance} away` : '']
           .filter(Boolean)
@@ -468,6 +488,8 @@
         <AlertIncoming
           alert={pendingAlert}
           own={lastCoord}
+          live={responderTrack}
+          responded={respondedAlert}
           busy={responding}
           error={respondError}
           onclose={dismissIncoming}

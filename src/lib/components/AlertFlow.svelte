@@ -54,6 +54,12 @@
   let transcript = $state('')
   let transcriptionStatus = $state('')
   let triageFromAudio = $state(false)
+  // Pre-trigger classification (POST /api/sos/classify) and the fan-out the
+  // backend widened when the audio raised the severity after the trigger.
+  let classifying = $state(false)
+  let classifyError = $state('')
+  let escalated = $state(false)
+  let recipientsAdded = $state(0)
   let mediaRecorder = null
   let mediaStream = null
   let mediaTimer = null
@@ -131,6 +137,9 @@
   const triageSourceLabel = $derived(
     triageFromAudio ? 'from your audio' : 'from your description',
   )
+  // Everyone the alert reached: the first fan-out plus the responders the
+  // backend added when the audio raised the priority.
+  const notifiedTotal = $derived(recipientsNotified + recipientsAdded)
 
   async function doTrigger() {
     if (destroyed) return
@@ -144,13 +153,51 @@
       else res(coords)
     })
 
+    // The clip from the countdown. Classify it first so the first fan-out
+    // already uses the audio level: explicit `emergency_type`/`severity`/
+    // `summary` win over the description triage, and severity picks the
+    // adaptive radius. classify() persists nothing, so the clip is uploaded
+    // again below as the evidence responders can listen to.
+    const clip = capturePromise ? await capturePromise : null
+    capturePromise = null
+    let audioTriage = null
+    if (clip) {
+      classifying = true
+      classifyError = ''
+      try {
+        const classified = await sosApi.classify(
+          clip.blob,
+          `sos-classify-${Date.now()}.${clip.extension}`,
+        )
+        if (classified?.emergency_type) audioTriage = classified
+        applyTriage(classified, true)
+        if (classified?.transcript) transcript = classified.transcript
+        transcriptionStatus = classified?.transcription_status || ''
+      } catch (err) {
+        // 503 (STT off) / 502 (provider down) / 400 / offline: send the SOS on
+        // the description triage instead. The media upload below re-classifies
+        // from the same clip, and the backend widens the fan-out if that raises
+        // the severity.
+        classifyError = err?.status ? `HTTP ${err.status}` : err?.message || 'unavailable'
+      } finally {
+        classifying = false
+      }
+    }
+
+    const fields = {
+      latitude: pos.lat,
+      longitude: pos.lng,
+      description: description.trim(),
+    }
+    if (audioTriage) {
+      fields.emergency_type = audioTriage.emergency_type
+      if (Number.isFinite(audioTriage.severity)) fields.severity = audioTriage.severity
+      if (audioTriage.summary) fields.summary = audioTriage.summary
+    }
+
     let result
     try {
-      result = await sosApi.trigger({
-        latitude: pos.lat,
-        longitude: pos.lng,
-        description: description.trim(),
-      })
+      result = await sosApi.trigger(fields)
     } catch (err) {
       if (err?.status === 429) {
         rateLimited = true
@@ -177,14 +224,10 @@
     })
     phase = 'active'
 
-    // The clip recorded during the countdown can only be uploaded now: the
-    // media endpoint hangs off the alert. It transcribes and re-classifies, so
-    // the card starts on the description and follows the audio when it lands.
-    if (capturePromise) {
-      const clip = await capturePromise
-      capturePromise = null
-      if (clip && !destroyed) uploadClip(clip.blob, clip.extension)
-    }
+    // Evidence upload: the media row is what lets responders listen to the
+    // clip. Its response can still escalate the fan-out when this ran as the
+    // fallback path (no pre-trigger classification).
+    if (clip && !destroyed) uploadClip(clip.blob, clip.extension)
   }
 
   async function doResolve() {
@@ -426,6 +469,12 @@
       if (result?.transcript) transcript = result.transcript
       transcriptionStatus = result?.transcription_status || ''
       applyTriage(result?.triage, true)
+      // The backend widens the fan-out when this transcript raises the
+      // severity above what the first fan-out used, and reports the delta.
+      if (result?.escalated) {
+        escalated = true
+        recipientsAdded += result?.recipients_added || 0
+      }
     } catch (err) {
       if (destroyed) return
       mediaState = 'error'
@@ -744,8 +793,16 @@
             <Radio size={42} strokeWidth={1.8} class="text-white" />
           </span>
         </div>
-        <h2 class="mt-8 text-center text-[22px] font-semibold tracking-[-0.02em]">AI analyzing & alerting responders</h2>
-        <p class="mt-2 text-center text-[12.5px] text-white/70">Sending your alert · the recorded audio goes to the AI triage engine…</p>
+        <h2 class="mt-8 text-center text-[22px] font-semibold tracking-[-0.02em]">
+          {classifying ? 'AI listening to your audio' : 'Alerting nearby responders'}
+        </h2>
+        <p class="mt-2 text-center text-[12.5px] text-white/70">
+          {#if classifying}
+            Classifying the {total}s clip so the first alert already carries the audio level…
+          {:else}
+            Sending your SOS with the classification the audio produced…
+          {/if}
+        </p>
         <div class="mt-6 flex items-center gap-1.5">
           {#each [0, 1, 2] as dot}
             <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-white/80" style="animation-delay: {dot * 150}ms"></span>
@@ -864,6 +921,13 @@
                 {TRANSCRIPTION_NOTES[transcriptionStatus] || ''}
               </p>
             {/if}
+
+            {#if classifyError && !triageFromAudio}
+              <p class="mt-2 text-[9.5px] leading-snug text-white/40">
+                Pre-trigger audio classification unavailable ({classifyError}) — this level came
+                from your description.
+              </p>
+            {/if}
           </div>
         </div>
       {/if}
@@ -938,7 +1002,7 @@
 
       <div class="mt-4 flex items-center justify-between px-0.5">
         <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">
-          Responders notified · {recipientsNotified}
+          Responders notified · {notifiedTotal}
         </p>
         <span
           class="flex items-center gap-1 text-[10px] font-medium {acknowledged
@@ -968,6 +1032,16 @@
             >{triageResult?.severity >= 0.67 ? '5 km' : triageResult?.severity >= 0.34 ? '2 km' : '1 km'}</span
           > radius based on the AI severity score.
         </p>
+        {#if escalated}
+          <p class="mt-1.5 flex items-start gap-1.5 text-[10.5px] font-medium text-[#6EE7B7]">
+            <Radio size={11} class="mt-px shrink-0" />
+            <span
+              >The audio raised the priority, so {recipientsAdded} more
+              {recipientsAdded === 1 ? 'responder was' : 'responders were'} notified at the wider
+              radius.</span
+            >
+          </p>
+        {/if}
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-2.5">
@@ -1094,7 +1168,7 @@
             <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Responded</p>
           </div>
           <div class="flex-1 text-center">
-            <p class="text-[15px] font-semibold">{recipientsNotified}</p>
+            <p class="text-[15px] font-semibold">{notifiedTotal}</p>
             <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Notified</p>
           </div>
         </div>

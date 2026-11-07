@@ -6,6 +6,7 @@
     HeartPulse,
     Clock,
     Navigation,
+    Radio,
     ShieldAlert,
     Loader2,
   } from '@lucide/svelte'
@@ -18,17 +19,46 @@
     formatDistance,
   } from '$lib/alertMeta.js'
 
-  let { alert = null, own = null, busy = false, error = '', onclose, onrespond } = $props()
+  let {
+    alert = null,
+    own = null,
+    live = null,
+    responded = null,
+    busy = false,
+    error = '',
+    onclose,
+    onrespond,
+  } = $props()
 
+  // A responder watching an open alert gets the newest classification over the
+  // tracking socket (ALERT_TRIAGE). Prefer it over the payload the inbox was
+  // polled with, which is frozen at fan-out time.
+  const track = $derived(live?.alertId && live.alertId === alert?.alert_id ? live : null)
+  const liveTriage = $derived(track?.triage || null)
   const senderName = $derived(alert?.sender?.name || 'Neighbor')
   const senderInitials = $derived(initialsFor(senderName))
-  const typeLabel = $derived(emergencyLabel(alert?.emergency_type))
+  const typeLabel = $derived(emergencyLabel(liveTriage?.emergency_type || alert?.emergency_type))
   const location = $derived(alert?.latest_location || alert?.initial_location || null)
   const distance = $derived(distanceMeters(own, location))
   const distanceText = $derived(distance != null ? `±${formatDistance(distance)}` : 'nearby')
-  const summary = $derived(alert?.summary || `${typeLabel} emergency`)
+  const summary = $derived(liveTriage?.summary || alert?.summary || `${typeLabel} emergency`)
+  const reclassified = $derived(
+    !!liveTriage?.emergency_type && liveTriage.emergency_type !== alert?.emergency_type,
+  )
+  const respondedLine = $derived(
+    [
+      responded?.eta ? `ETA ${responded.eta}` : '',
+      responded?.distance ? `${responded.distance} away` : '',
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  )
   const statusLabel = $derived(
-    alert?.status === 'ACKNOWLEDGED' ? 'Responder en route' : 'Waiting for help',
+    responded
+      ? 'You are on the way'
+      : alert?.status === 'ACKNOWLEDGED'
+        ? 'Responder en route'
+        : 'Waiting for help',
   )
 
   const details = $derived([
@@ -102,6 +132,15 @@
         respond.
       </p>
 
+      {#if reclassified}
+        <p
+          class="mt-2 inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-[9.5px] font-semibold text-ink/60 ring-1 ring-black/5"
+        >
+          <Radio size={11} class="text-[#E7A93B]" />
+          Re-classified from the audio: {typeLabel}
+        </p>
+      {/if}
+
       <div class="mt-4">
         <MapCard
           height="h-[132px]"
@@ -111,6 +150,7 @@
           radiusLabel={distanceText}
           own={own}
           focus={location}
+          live={track}
         />
       </div>
 
@@ -134,28 +174,48 @@
       {/if}
 
       <div class="mt-4 space-y-1.5">
-        <button
-          type="button"
-          onclick={onrespond}
-          disabled={busy}
-          aria-busy={busy}
-          class="flex w-full items-center justify-center gap-2 rounded-full bg-sos py-3.5 text-[13px] font-semibold text-white shadow-[0_12px_28px_-10px_rgba(255,59,48,0.7)] transition active:scale-[0.98] disabled:opacity-70"
-        >
-          {#if busy}
-            <Loader2 size={15} class="animate-spin" />
-            Sending response…
-          {:else}
-            <Navigation size={15} strokeWidth={2.4} />
-            I'm coming
-          {/if}
-        </button>
-        <button
-          type="button"
-          onclick={onclose}
-          class="w-full rounded-full py-3 text-[12px] font-semibold text-ink/50 transition hover:text-ink"
-        >
-          Not available right now
-        </button>
+        {#if responded}
+          <div class="rounded-2xl bg-[#E9F7F1] px-3.5 py-3 ring-1 ring-[#0ba36f]/15">
+            <p class="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#087a54]">
+              <Navigation size={13} strokeWidth={2.4} />
+              You're on the way{respondedLine ? ` · ${respondedLine}` : ''}
+            </p>
+            <p class="mt-1 text-[10.5px] leading-snug text-[#087a54]/80">
+              Your live location is shared with them, and this screen follows the alert until it
+              ends.
+            </p>
+          </div>
+          <button
+            type="button"
+            onclick={onclose}
+            class="w-full rounded-full py-3 text-[12px] font-semibold text-ink/50 transition hover:text-ink"
+          >
+            Close
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={onrespond}
+            disabled={busy}
+            aria-busy={busy}
+            class="flex w-full items-center justify-center gap-2 rounded-full bg-sos py-3.5 text-[13px] font-semibold text-white shadow-[0_12px_28px_-10px_rgba(255,59,48,0.7)] transition active:scale-[0.98] disabled:opacity-70"
+          >
+            {#if busy}
+              <Loader2 size={15} class="animate-spin" />
+              Sending response…
+            {:else}
+              <Navigation size={15} strokeWidth={2.4} />
+              I'm coming
+            {/if}
+          </button>
+          <button
+            type="button"
+            onclick={onclose}
+            class="w-full rounded-full py-3 text-[12px] font-semibold text-ink/50 transition hover:text-ink"
+          >
+            Not available right now
+          </button>
+        {/if}
       </div>
 
       <p class="mt-2 text-center text-[9.5px] leading-relaxed text-muted/80">

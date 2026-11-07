@@ -35,8 +35,10 @@ refused by preflight until they are added to the `AllowOrigins` list in
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: the browser Web Push endpoints (`/api/push/*`), at
-  backend commit `fb661d9`.
+  workspace. Last re-copy: the pre-trigger classify endpoint
+  (`POST /api/sos/classify`), the explicit `severity`/`summary` trigger fields,
+  and the media response's `escalated`/`recipients_added`, at backend commit
+  `2eca9b8`.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.
@@ -64,15 +66,20 @@ refused by preflight until they are added to the `AllowOrigins` list in
   12 s, real sheet/banner, `POST /respond`, then responder WS stream),
   10 s audio evidence via `MediaRecorder` + multipart upload. **The SOS
   countdown is the audio window**: the 10 s between "Continue → Send SOS" and
-  the trigger are recorded, and the clip is uploaded to
-  `POST /api/sos/:alertId/media` as soon as the trigger answers with an
-  `alert_id`. The backend transcribes audio (≤ 25 MB) and returns `transcript`,
-  `transcription_status`, and an updated `triage`; the active screen shows the
-  transcript and follows that classification (`ALERT_TRIAGE` over the tracking
-  socket does the same when the re-classification happens later), so the card
-  starts as "from your description" and switches to "from your audio". A blocked
-  microphone does not stop the SOS — the countdown says "Sending without audio"
-  and the description-based triage stands. **Browser Web
+  the trigger are recorded, the clip is classified before the alert goes out
+  (`POST /api/sos/classify`, nothing persisted), and the audio-derived
+  `emergency_type`/`severity`/`summary` ride in the `POST /api/sos` body — so the
+  **first fan-out already uses the level from the speech**, not the typed
+  description. The clip is then uploaded to `POST /api/sos/:alertId/media` as the
+  evidence responders can listen to; if that transcript raises the severity, the
+  backend widens the radius and the screen shows `escalated`/`recipients_added`.
+  The active screen shows the transcript and follows re-classifications
+  (`ALERT_TRIAGE` over the tracking socket does the same when it happens later),
+  so the card starts as "from your description" — or as "from your audio" as soon
+  as the pre-trigger classification lands — and a `503`/`502` from classify falls
+  back to that description triage. A blocked microphone does not stop the SOS —
+  the countdown says "Sending without audio" and the description triage stands.
+  **Browser Web
   Push is wired**: the Profile toggle registers `/sw.js` + a VAPID subscription
   with `POST /api/push/subscriptions`, `App.svelte` re-syncs it on
   restore/login and drops it on sign-out/session-expired, and a nearby SOS
@@ -89,10 +96,6 @@ refused by preflight until they are added to the `AllowOrigins` list in
     backend needs a `safe_pin` the app never sets, so `PATCH /api/users/_current`
     (Profile) has to come first; today the only way to close an alert is
     `resolve` (`RESOLVED`);
-  - the responder sheet still shows the classification from the inbox payload:
-    `ALERT_TRIAGE` reaches the responder channel, but `AlertIncoming` is not
-    given the tracking store, so a re-classification after the alert was opened
-    does not update it (the sender's active alert does follow it);
   - video capture and in-app playback/download of media;
   - native push device tokens (FCM/APNs via `fcm_token`/`apns_token`) — browser
     Web Push covers the browser demo, and inbox polling stays as the in-app
@@ -104,8 +107,11 @@ refused by preflight until they are added to the `AllowOrigins` list in
   `status`, `payload`, and `retryAfter` (parsed from `Retry-After` seconds or
   HTTP date). `request()` passes `FormData` through untouched (no JSON
   Content-Type) for multipart uploads; `sos.uploadMedia(alertId, blob, filename)`
-  posts field `file` to `/api/sos/:id/media`. The `push` module wraps the four
-  Web Push routes (`publicKey`, `subscribe`, `unsubscribe`, `list`).
+  posts field `file` to `/api/sos/:id/media` and `sos.classify(blob, filename)`
+  the same field to `/api/sos/classify` (pre-trigger classification, thrown
+  errors carry `status` so the caller can fall back on `503`/`502`). The `push`
+  module wraps the four Web Push routes (`publicKey`, `subscribe`, `unsubscribe`,
+  `list`).
 - `src/lib/push.js` — browser Web Push registration (mirrors the grant-only
   style of `mic.js`). `pushBlockReason()` reports `insecure`/`unsupported`
   first, `pushPermissionState()` maps `Notification.permission`, and
@@ -152,7 +158,8 @@ refused by preflight until they are added to the `AllowOrigins` list in
   `startResponderTracking(alertId, seed)`, `stopResponderTracking()`.
   The store also carries `triage` (`{emergency_type, severity, summary}`), set
   by the `ALERT_TRIAGE` frame the backend broadcasts after it re-classifies an
-  alert from the transcribed audio.
+  alert from the transcribed audio; frames whose `alert_id` does not match the
+  connected alert are ignored.
 - `src/lib/alertMeta.js` — `emergencyLabel`, `initialsFor`, `timeAgo`,
   `formatDistance`, `formatEta`, and `distanceMeters` (haversine) shared by the
   incoming sheet and Home banner.
@@ -207,23 +214,33 @@ refused by preflight until they are added to the `AllowOrigins` list in
   container (`map.invalidateSize()`) so the map survives being hidden and shown.
 - `src/lib/components/AlertIncoming.svelte` — real inbox alert sheet. Receives
   one `AlertDetailResponse`, computes approximate distance from own coords to
-  the masked location, and calls the app's respond handler. No demo copy.
-- `src/lib/components/AlertFlow.svelte` — describe → 10 s countdown → trigger →
-  triage → resolve. The countdown is two things at once. It is the cancel
-  window: the alert is only POSTed when it runs out, so "Cancel alert" and the
-  header X abort locally with nothing to undo (they render only while
+  the masked location, and calls the app's respond handler. It also takes the
+  responder's tracking store and the `responded` record: the sheet stays open
+  after `POST /respond` as the responder's live view (ETA line, the victim's
+  moving pin on the map) and prefers an `ALERT_TRIAGE` re-classification over the
+  inbox payload, flagging it with a "Re-classified from the audio" chip. The app
+  drops it once the alert reaches a terminal status.
+- `src/lib/components/AlertFlow.svelte` — describe → 10 s countdown → classify →
+  trigger → triage → resolve. The countdown is two things at once. It is the
+  cancel window: the alert is only POSTed when it runs out, so "Cancel alert" and
+  the header X abort locally with nothing to undo (they render only while
   `phase === 'count'`; `'sending'` is the in-flight spinner and offers no
   cancel). And it is the audio window: `startCapture()` opens the microphone as
   the countdown starts (`captureState`, shown as "Audio evidence recording · Ns
-  left"), the recorder is stopped the moment the countdown ends, and the clip is
-  held until the trigger answers with an `alert_id` — then
-  `POST /api/sos/:id/media` uploads it, so the classification can come from
-  speech. A blocked or failing microphone only downgrades the UI ("Sending
-  without audio", `MIC_HELP` copy) and the SOS still goes out. The triage card
-  starts as "from your description", then `applyTriage()` takes over from the
-  upload response or from an `ALERT_TRIAGE` frame and the card becomes "from
-  your audio", showing the transcript and the transcription note
-  (`disabled`/`too_large`/`empty`/`failed`).
+  left"), and the recorder is stopped the moment the countdown ends.
+  `doTrigger()` then runs three steps: `sosApi.classify(clip)` (pre-trigger, so
+  the first fan-out uses the audio level — a `503`/`502`/offline failure just
+  sets `classifyError` and the SOS goes out on the description triage), the
+  trigger with `emergency_type`/`severity`/`summary` when the classification
+  succeeded, and finally the evidence upload to `POST /api/sos/:id/media` with
+  the same clip. A blocked or failing microphone only downgrades the UI
+  ("Sending without audio", `MIC_HELP` copy) and the SOS still goes out. The
+  triage card starts as "from your description" — or "from your audio" as soon
+  as the classify response lands — then `applyTriage()` takes over from the media
+  response or an `ALERT_TRIAGE` frame; it shows the transcript, the
+  transcription note (`disabled`/`too_large`/`empty`/`failed`) and, when the
+  media response escalated the fan-out, "+N responders at the wider radius" with
+  the notified count including them.
   Ending an active alert takes two taps — "I'm safe — end alert" arms
   `confirming`, the second tap sends `POST /resolve` — so a stray tap cannot
   stop a live alert. Starts tracking via `ontrack`, sends throttled breadcrumbs
@@ -350,15 +367,29 @@ Whisper endpoint (default Groq `whisper-large-v3-turbo`, language `id`).
 }
 ```
 
-`src/lib/tracking.js` folds `ALERT_TRIAGE` into the `triage` field of the
-tracking store, and `AlertFlow` applies it to the triage card (header, severity
-bar and radius copy all follow it). The responder sheet does not read that field
-yet, so a responder watching an open alert still sees the inbox classification.
+`POST /api/sos/classify` takes the same multipart `file` field before the alert
+exists and returns `emergency_type`/`severity`/`summary` (+`transcript`,
+`transcription_status`) without persisting anything. `AlertFlow` calls it with
+the countdown clip and sends those three values in the trigger body, where they
+win over the description triage and pick the adaptive radius — so the first
+fan-out is already based on the speech. `503` (STT off), `502` (provider failed),
+`400` and network errors just fall back to the description triage: the SOS goes
+out either way, and the media upload then re-classifies from the same clip.
 
-Because the frontend uploads the clip only after `POST /api/sos` answered, the
-first fan-out still happens on the description-based classification: raising the
-severity from the audio does not re-notify a wider radius (a pending backend
-item), it only updates the alert, the socket frame and the sending screen.
+`src/lib/tracking.js` folds `ALERT_TRIAGE` into the `triage` field of the
+tracking store; `AlertFlow` applies it to the triage card (header, severity bar
+and radius copy all follow it) and `AlertIncoming` prefers it over the inbox
+payload while the responder sheet is open.
+
+Because the clip is uploaded as well (the classify endpoint stores nothing, and
+the media row is what responders can listen to), the audio is transcribed twice:
+once for the pre-trigger classification and once by the media endpoint. The
+second pass is what can widen the fan-out — `UploadMedia` compares the alert's
+pre-audio severity with the transcript triage, re-runs `findRecipients` at the
+wider radius, notifies only the new responders after the grace period, and
+reports `escalated`/`recipients_added`, which the active screen shows. If the
+backend were to accept a "transcribe: false" hint on the media upload, the
+frontend could drop the duplicate pass.
 
 ## Browser Web Push (implemented)
 
@@ -422,9 +453,10 @@ SOS shows a real OS notification even while the tab is in the background.
 - Nearby respond coords are masked; do not expect exact positions.
 - Native FCM/APNs device push and Twilio SMS are log-only (no credentials);
   **browser Web Push is configured and live** instead (see "Browser Web Push").
-- Pending backend items: native push/SMS credentials, Redis GEO TTL/cleanup, and
-  broader re-fanout when post-trigger audio raises severity. Audio STT and
-  browser Web Push themselves are wired.
+- Re-fanout is implemented: when a post-trigger clip raises the severity, the
+  backend widens the radius and notifies only the new responders, and the media
+  response reports `escalated`/`recipients_added`. Pending backend items: native
+  push/SMS credentials and Redis GEO TTL/cleanup.
 - Incoming-alert semantics: `GET /api/sos/inbox` is the in-app fallback for push
   (it also feeds the sheet when Web Push is off/denied). WS tracking is per-alert
   and only authorizes the sender or a recorded responder, so the app polls the

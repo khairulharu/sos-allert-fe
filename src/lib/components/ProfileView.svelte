@@ -202,7 +202,7 @@
               : 'bg-[#E3E6EA]'}"
           >
             <span
-              class="absolute top-[3px] h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 {settings[
+              class="absolute top-[3px] left-0 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 {settings[
                 item.key
               ]
                 ? 'translate-x-[21px]'

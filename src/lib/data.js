@@ -4,7 +4,6 @@ export const user = {
   initials: 'KA',
   phone: '+62 812 3456 7890',
   memberSince: 'March 2024',
-  area: 'Kemang, Jakarta Selatan',
   trustScore: 98,
 }
 

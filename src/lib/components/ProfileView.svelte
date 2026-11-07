@@ -17,6 +17,7 @@
     Users,
   } from '@lucide/svelte'
   import { user as mockUser } from '$lib/data.js'
+  import { place } from '$lib/stores.js'
 
   let { user = mockUser, onsignout } = $props()
 
@@ -126,7 +127,7 @@
         <p class="mt-0.5 text-[11.5px] text-muted">{user?.phone || user?.id || '—'}</p>
         <p class="mt-2 inline-flex items-center gap-1 text-[10.5px] font-medium text-muted">
           <MapPin size={11} class="text-sos" />
-          {user?.area || '—'} · Member since {memberSince}
+          {$place || 'Location unavailable'} · Member since {memberSince}
         </p>
       </div>
 

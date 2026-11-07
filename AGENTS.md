@@ -68,6 +68,11 @@ cd ../backend && go run cmd/web/main.go
   posts field `file` to `/api/sos/:id/media`.
 - `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
   by the auth and SOS 429 UIs.
+- `src/lib/place.js` — reverse geocoding for the header location pill
+  (Nominatim/OSM, no API key; same source as the map tiles). Coordinates are
+  bucketed to 3 decimals (~110 m), answers cached in localStorage for 7 days
+  and deduped per bucket, so a wandering heartbeat does not re-ask the
+  provider. `resolvePlace()` returns `"Kuta, Badung"`-style labels or `null`.
 - `src/lib/tracking.js` — two independent WebSocket channels sharing one
   connection implementation. Builds the WS URL (`VITE_WS_URL` or `ws(s)://`
   derived from `VITE_API_URL`), sends the raw token as `?token=`, reconnects
@@ -96,7 +101,10 @@ cd ../backend && go run cmd/web/main.go
   Fallback coords are Bali (`-8.65, 115.22`) if browser geolocation is denied;
   heartbeat errors are currently swallowed.
 - `src/lib/components/HomeView.svelte` — protection card, responder count,
-  quick actions. Also owns the nearby polling: syncs own heartbeat, calls
+  quick actions. The pill under the greeting shows the reverse-geocoded
+  heartbeat location (`Locating…` → `Kuta, Badung`, `Location unavailable` when
+  the heartbeat or the geocoder has no answer) and publishes it to the `place`
+  store for `ProfileView`. Also owns the nearby polling: syncs own heartbeat, calls
   `location.nearby(1000)` every 15 s (skipped while the tab is hidden), and
   calls `onsessionexpired` on `401` so `App.svelte` logs out.
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no

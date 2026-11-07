@@ -16,6 +16,8 @@
   } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
   import { contacts, location as locationApi } from '$lib/api.js'
+  import { place as placeStore } from '$lib/stores.js'
+  import { cachedPlace, resolvePlace } from '$lib/place.js'
   import { emergencyLabel, distanceMeters, formatDistance } from '$lib/alertMeta.js'
 
   let {
@@ -41,8 +43,6 @@
             .join('')
         : '—'),
   )
-  const area = $derived(user?.area || 'Kemang, Jakarta Selatan')
-
   const incomingName = $derived(incoming?.sender?.name || 'Neighbor')
   const incomingType = $derived(emergencyLabel(incoming?.emergency_type))
   const incomingLocation = $derived(
@@ -84,6 +84,50 @@
   let refreshing = false
   let ownSynced = false
   let pollTimer
+
+  // The header pill shows where the heartbeat actually is: coordinates go
+  // through the reverse geocoder once per ~110 m bucket (src/lib/place.js) and
+  // the result is shared with the Profile screen.
+  let placeText = $state('')
+  let placeResolving = $state(false)
+
+  $effect(() => {
+    const latitude = Number(own?.latitude)
+    const longitude = Number(own?.longitude)
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      placeText = ''
+      placeResolving = false
+      placeStore.set('')
+      return
+    }
+
+    const cached = cachedPlace(latitude, longitude)
+    if (cached) {
+      placeText = cached
+      placeResolving = false
+      placeStore.set(cached)
+      return
+    }
+
+    let cancelled = false
+    placeResolving = true
+    resolvePlace(latitude, longitude)
+      .then((label) => {
+        if (cancelled) return
+        placeText = label || ''
+        placeStore.set(label || '')
+      })
+      .finally(() => {
+        if (!cancelled) placeResolving = false
+      })
+    return () => {
+      cancelled = true
+    }
+  })
+
+  const areaLabel = $derived(
+    placeText || (placeResolving || nearbyLoading ? 'Locating…' : 'Location unavailable'),
+  )
 
   const responderView = $derived(
     responders.map((person, i) => ({
@@ -272,7 +316,7 @@
       class="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-ink/80 ring-1 ring-black/5 transition hover:text-ink active:scale-95"
     >
       <MapPin size={12} class="text-sos" strokeWidth={2.6} />
-      {area}
+      {areaLabel}
       <ChevronDown size={12} class="text-muted" />
     </button>
   </div>

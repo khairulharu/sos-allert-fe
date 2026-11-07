@@ -11,6 +11,10 @@ export const session = writable({
 // Last AI triage result from a triggered SOS (shown in the alert flow).
 export const lastTriage = writable(null)
 
+// Reverse-geocoded "you are here" label for the current heartbeat, resolved by
+// HomeView (src/lib/place.js) and reused by the Profile screen.
+export const place = writable('')
+
 // The backend login response contains {token} only (no id/name), so we
 // fetch the full profile from /users/_current to populate the session.
 async function hydrateUser(token) {

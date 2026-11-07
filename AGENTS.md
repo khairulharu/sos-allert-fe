@@ -2,12 +2,10 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `7e7ec3b` (X-Forwarded-For trust + locked CORS)
-on top of `dac6219` (location APIs, auth rate limit, audio STT), plus the browser
-**Web Push** work (uncommitted backend working tree: `webpush` config section,
-`push_subscriptions` table, `/api/push/*` endpoints).
-The mirrored API contract was re-copied in that working tree; everything else is
-at frontend commit `6cd9ea0`.
+Backend state at handoff: commit `fb661d9` (browser Web Push: `webpush` config
+section, `push_subscriptions` table, `/api/push/*` endpoints) on top of
+`7e7ec3b` (X-Forwarded-For trust + locked CORS) and `dac6219` (location APIs,
+auth rate limit, audio STT). The mirrored API contract matches `fb661d9`.
 
 ## Run
 
@@ -37,8 +35,8 @@ refused by preflight until they are added to the `AllowOrigins` list in
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: the browser Web Push endpoints (`/api/push/*`), from
-  the backend working tree on top of commit `dac6219`.
+  workspace. Last re-copy: the browser Web Push endpoints (`/api/push/*`), at
+  backend commit `fb661d9`.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.

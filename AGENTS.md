@@ -68,7 +68,14 @@ refused by preflight until they are added to the `AllowOrigins` list in
   Push is wired**: the Profile toggle registers `/sw.js` + a VAPID subscription
   with `POST /api/push/subscriptions`, `App.svelte` re-syncs it on
   restore/login and drops it on sign-out/session-expired, and a nearby SOS
-  shows a real OS notification (see "Browser Web Push" below).
+  shows a real OS notification (see "Browser Web Push" below). **Install icons
+  are wired**: `public/manifest.webmanifest`, `public/apple-touch-icon.png`
+  (180×180) and `public/icons/icon-192|512.png` carry the sign-in logo — the
+  `--color-ink` tile, its `from-white/20` sheen, and the white `Siren` at 30/64
+  — with `index.html` linking the manifest, the apple icon, and
+  `apple-mobile-web-app-title` ("SOS Alert") for Add to Home Screen. The PNGs
+  are full-bleed (iOS applies its own mask); `public/favicon.svg` is the same
+  artwork with the tile's 22/64 rounding.
 - Not wired yet:
   - handling the new `ALERT_TRIAGE` WebSocket frame and showing the updated
     classification/transcript in the active alert and responder sheet;

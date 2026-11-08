@@ -1,130 +1,196 @@
 # SOS Alert — Frontend
 
-> Agent/context handoff notes (backend contract, current state, next tasks):
-> [`AGENTS.md`](./AGENTS.md).
+A mobile-first community emergency-response app built with **Svelte 5**, **Vite 6**,
+**Tailwind CSS v4**, and **Leaflet + OpenStreetMap**. The UI is custom; there is no
+component library.
+
+The frontend is wired to the companion **Go/Fiber backend** in `../backend`. It
+supports real authentication, SOS creation, audio-driven AI triage, evidence upload,
+nearby-responder discovery, incoming alerts, live WebSocket tracking, and browser
+Web Push.
+
+> Detailed implementation and backend handoff notes: [`AGENTS.md`](./AGENTS.md).
 >
-> API contract: [`api/api-spec.json`](./api/api-spec.json) ·
-> [`api/api.md`](./api/api.md).
+> Mirrored API contract: [`api/api-spec.json`](./api/api-spec.json) ·
+> [`api/api.md`](./api/api.md). The backend copies remain authoritative.
 
-A mobile-first UI/UX concept for a community SOS app. Built with **Svelte 5**,
-**Tailwind CSS v4**, and **Leaflet + OpenStreetMap** for the live responder map.
-No UI kit — every screen and icon layout is custom.
-
-The app is designed around one idea: in an emergency, help should be one gesture
-away. Press and **hold** the red SOS button in the middle of the bottom navigation
-to start the alert flow. When you describe what happened, the backend runs **AI
-triage** and shows the result (emergency type, severity, summary) live on screen.
-
-## Run it
+## Run locally
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The layout is responsive: full-screen on mobile and a
-centered app shell on desktop.
+Open **http://localhost:5173**. The backend must be running separately:
 
 ```bash
-npm run build     # production build to dist/
-npm run preview   # preview the build
+cd ../backend
+go run cmd/web/main.go
 ```
 
-The API base URL defaults to `http://localhost:3000`; the WebSocket base is
-derived from it (`http` → `ws`, `https` → `wss`). Override either with an env file:
+The API defaults to `http://localhost:3000`. Override the HTTP and WebSocket base
+URLs through `.env`:
 
 ```bash
 cp .env.example .env
-# VITE_API_URL=https://api.allert.my.id
-# VITE_WS_URL=wss://api.allert.my.id
 ```
 
-`npm run build` reads `.env.production`, which already points at
-`https://api.allert.my.id` / `wss://api.allert.my.id`. Real environment
-variables override those defaults in CI. Deploy the generated `dist/` directory
-as static files; `dist/` is gitignored, so run the build on the deploy host or
-in CI:
+```dotenv
+VITE_API_URL=http://localhost:3000
+VITE_WS_URL=ws://localhost:3000
+```
+
+If `VITE_WS_URL` is empty, the app derives it from `VITE_API_URL` (`http` → `ws`,
+`https` → `wss`).
+
+Backend CORS currently allows only `https://allert.my.id` and
+`http://localhost:5173`. Use that exact local origin; `127.0.0.1`, LAN URLs, and
+Vite preview on port 4173 fail preflight unless the backend allowlist is changed.
+
+## Production build
 
 ```bash
 npm ci
-npm run build   # artifact: dist/
+npm run build
 ```
 
-## Already implemented (live, wired to the Go backend)
+The static output is written to `dist/`. `.env.production` already contains:
 
-| Area | What works |
+```dotenv
+VITE_API_URL=https://api.allert.my.id
+VITE_WS_URL=wss://api.allert.my.id
+```
+
+These values are compiled into the JavaScript bundle. Real environment variables
+override the file during CI/deployment. `npm run preview` can inspect the build,
+but its default origin is not accepted by the current backend CORS configuration.
+
+## Implemented and wired
+
+| Area | Current behavior |
 | --- | --- |
-| **Auth** | Sign in / create account against `POST /api/users` + `/api/users/_login`; session token kept in `localStorage`; sign out. Raw token sent in the `Authorization` header (matches backend). |
-| **Rate limits** | Auth `429` (5/min/IP + 15 min lockout): countdown from `Retry-After` when readable, otherwise a 15-minute fallback; submit disabled. SOS `429` (3 triggers/hour/user): dedicated "SOS limit reached" screen, no retry loop, call-112 prompt. |
-| **Location heartbeat** | `PUT /api/location` sent at startup (browser geolocation) and every 60 s, so you appear as a nearby responder. |
-| **Responder map** | Leaflet + OpenStreetMap (no API token). Centers on your heartbeat, draws the 1 km radius, masked responder pins and a live list from `GET /api/location/nearby`; polls every 15 s. Backend returns only `user_id` + ~100 m-rounded coordinates, so the UI shows generic "Responder" rows and pins. |
-| **Live tracking (WebSocket)** | The sender's active alert connects to `WS /ws/sos/:alertId/track?token=<raw token>`, sends a breadcrumb every 5 s (throttled), and applies `LOCATION_UPDATE` / `ALERT_STATUS` frames. The live pin moves on the Home map; acknowledge/resolve/cancel/expire update the active UI. Reconnects with backoff, and cold start resumes the own active alert via `GET /api/sos/active`. The backend also emits `ALERT_TRIAGE` after audio transcription; the UI does not handle that frame yet. |
-| **Incoming responder alerts** | Polls `GET /api/sos/inbox` every 12 s while authenticated. Pre-existing alerts show as a Home banner; new alerts from a later poll auto-open the real `AlertIncoming` sheet with sender, type, summary, message and approximate distance (computed from your heartbeat + masked coords). "I'm coming" calls `POST /api/sos/:id/respond` and shows the returned ETA/distance, then subscribes to that alert's WS stream for the victim's live pin and status. |
-| **Push notifications (browser)** | Real **Web Push** (VAPID + service worker), no Firebase credentials: the Profile toggle registers `public/sw.js` and a `PushManager` subscription with the backend (`GET /api/push/vapid-public-key`, `POST /api/push/subscriptions`). A nearby SOS then shows an OS notification even with the tab in the background; clicking it focuses the app and the incoming sheet opens. Turning the toggle off deletes both the backend row and the browser subscription. Needs a secure context (`https://` or `localhost`). |
-| **SOS flow with AI triage** | Hold SOS → describe what happened → 5 s cancellable countdown → real `POST /api/sos` with description → **AI triage result card**: emergency type, severity 0–1 with bar, summary, and the 1/2/5 km responder radius the severity picked. "I'm safe — end alert" calls `POST /api/sos/:id/resolve`. |
-| **Audio evidence** | While the alert is active, record up to 10 s with `MediaRecorder`, then upload as `multipart/form-data` (`file`) to `POST /api/sos/:id/media`. Shows recording countdown, upload state, permission/upload errors, and supports additional clips. Audio only (backend also accepts video, not captured). Backend transcribes audio ≤ 25 MB (Groq/Whisper-compatible) and returns `transcript`, `transcription_status`, and updated `triage`; the UI does not render those fields yet. |
-| **Cancel** | Uses your **safe PIN** (`POST /api/sos/:id/cancel`); set the PIN via `PATCH /api/users/_current` `{"safe_pin":"1234"}`. |
-| **Alerts** | Real history from `GET /api/sos/active` + `/api/sos/inbox`, merged and deduped, with status chips and severity/summary metadata. |
-| **Contacts** | Real emergency contacts from `GET/POST /api/emergency-contacts`, with an inline add form. |
-| **Profile** | Real user from `GET /api/users/_current` (name, created date), sign out wired. The stat cards and emergency info are still demo values. |
+| **Authentication** | Register, sign in, restore a session, fetch the current profile, and sign out through the real user API. The raw session token is sent in `Authorization` without a `Bearer` prefix. Login/registration `429` responses show a cooldown; SOS `429` responses show a dedicated limit screen. |
+| **SOS creation** | Hold the center SOS button, describe the emergency, then pass through a **10-second cancellable countdown**. Cancelling during the countdown closes the flow without creating an alert. Trigger requests include an idempotency key. |
+| **Audio-driven triage** | The countdown is also the audio-recording window. Before the SOS is created, the clip is sent to `POST /api/sos/classify`; successful classification supplies `emergency_type`, `severity`, and `summary` for the first responder fan-out. |
+| **Fail-open emergency flow** | A blocked microphone, unavailable STT service, classification failure, or offline classification request does not prevent the SOS. The app falls back to description-based triage and clearly reports when no audio was attached. |
+| **Evidence and re-classification** | After the SOS is created, the same clip is uploaded to `POST /api/sos/:alertId/media`. The active screen shows upload state, transcript/transcription status, and updated triage. If the transcript raises severity, the backend can widen the radius and the UI reports the additional responders notified. |
+| **Active alert screen** | Shows AI triage and its source, severity and fan-out radius, transcript, live map, WebSocket state, responder notifications, and responder distance/ETA/status. Ending an alert requires two taps and calls `POST /api/sos/:alertId/resolve`. |
+| **Sender live tracking** | Connects to `/ws/sos/:alertId/track?token=...`, sends location breadcrumbs every 5 seconds, resumes an owned active alert after reload/login, and reconnects with exponential backoff. Handles `LOCATION_UPDATE`, `ALERT_STATUS`, `ALERT_TRIAGE`, and `RESPONDER_ADDED` frames. |
+| **Responder map** | Leaflet + OpenStreetMap with the caller's heartbeat, radius circle, live alert pin, and masked nearby-responder pins. The location heartbeat runs every 60 seconds; nearby responders refresh every 15 seconds. Returning to Home does not rebuild the map or restart the location flow. |
+| **Incoming responder alerts** | Polls `GET /api/sos/inbox` every 12 seconds and immediately after push/visibility events. New alerts open a real sheet; existing alerts appear as a Home banner. `POST /api/sos/:alertId/respond` returns distance/ETA and starts the responder's read-only WebSocket view of the sender. |
+| **Browser Web Push** | The Profile toggle requests permission, registers `public/sw.js`, creates a VAPID subscription, and stores it through the backend. Notifications can focus/open the app on the relevant alert. Sign-out and session expiry remove the subscription before tearing down the session. Requires HTTPS or localhost. |
+| **Alerts and contacts** | The Alerts screen merges/deduplicates active owned alerts and incoming inbox alerts. Emergency contacts support real list and create operations, plus local search/filtering. |
+| **Install presentation** | Web manifest, favicon, Apple touch icon, and 192/512 px install icons are present. The service worker handles push notifications only; it does not provide an offline application cache. |
 
-## Not yet implemented
+## SOS and audio sequence
 
-- **Video capture / media playback** — only 10 s audio is recorded and uploaded;
-  no camera capture and no in-app playback of uploaded evidence yet.
-- **Audio triage UI / `ALERT_TRIAGE`** — the backend transcribes uploaded audio
-  and broadcasts an `ALERT_TRIAGE` WebSocket frame, but the frontend does not
-  render the transcript or updated classification yet.
-- **Backend STT key** — Groq key lives only in
-  `../backend/config.json` → `ai.stt.api_key`; never add it to `.env` or
-  frontend code.
-- **Native push tokens (FCM/APNs)** — the backend's FCM/APNs/Twilio channels are
-  still log-only (no credentials, no device tokens). The browser demo uses **Web
-  Push (VAPID)** instead, with inbox polling (12 s) as the in-app fallback when
-  the notification permission is denied or the toggle was never used.
-  Backend config: `../backend/config.json` → `webpush.*` (`enabled`,
-  `vapid_public_key`, `vapid_private_key`, `subscriber`, `ttl_seconds`).
-- **AI provider**: the backend defaults to the **offline keyword classifier**
-  (zero-cost, deterministic). To use a live LLM (OpenAI-compatible), set in the
-  backend `config.json` → `ai.provider: "openai"` + `ai.openai.*` key; the UI
-  displays whatever triage the backend returns, so it works with either.
-- "Call 112" / "Message" actions show a toast instead of placing a real call.
-- Nearby responders are anonymous (generic labels/pins). Adding names needs a
-  backend lookup plus a privacy decision.
+1. The user holds SOS and enters a description.
+2. The 10-second countdown starts. It is both the cancellation window and the
+   `MediaRecorder` capture window.
+3. When the countdown ends, recording stops and the clip is classified before the
+   alert exists. This request persists nothing.
+4. The app creates the SOS with coordinates, description, and—when available—the
+   audio-derived triage. Severity selects the 1 km, 2 km, or 5 km fan-out radius.
+5. The clip is uploaded again as persisted evidence. The media response or a later
+   `ALERT_TRIAGE` WebSocket frame can update the triage card; a severity increase
+   can trigger backend re-fanout.
+6. While active, the sender broadcasts breadcrumbs and the screen merges polled
+   responder details with `RESPONDER_ADDED` frames.
+7. Resolving the alert stops tracking. Closing or ending the flow discards the
+   local clip.
+
+The same audio is transcribed once for pre-trigger classification and once by the
+media endpoint. There is no manual recorder or additional-clip flow in the current
+UI.
+
+## Not implemented or still demonstrative
+
+- **False-alarm cancellation:** the API client has a cancel method, but the UI does
+  not configure the backend-required `safe_pin` or expose the PIN cancellation
+  flow. Users currently end their own alert with **resolve**.
+- **Video and evidence viewing:** no camera capture, in-app media playback, or
+  media download interface.
+- **Native device push:** FCM/APNs device tokens are not wired. Browser Web Push
+  and inbox polling are the implemented delivery paths.
+- **Nearby responder names:** the nearby-location API returns masked coordinates
+  and user IDs, so the general map uses generic "Responder" labels. Friendly names
+  require a backend/privacy decision.
+- **Profile placeholders:** edit/settings, medical information, privacy/help
+  links, some statistics, and the location/siren/auto-call toggles are static or
+  local-only. The push toggle is functional.
+- **Simulated quick actions:** Call 112, Message, and Share location currently show
+  UI feedback only; they do not place a call, send a message, or create/copy a real
+  share link. The Contacts quick action does navigate correctly.
+- **Offline use:** there is no offline SOS queue or cached application shell.
 
 ## Project structure
 
-```
+```text
 public/
-└── sw.js                       # service worker: renders push notifications, focuses the app on click
+├── manifest.webmanifest         # install metadata
+├── sw.js                        # push rendering and notification-click routing
+└── icons/                       # install icons
 src/
-├── App.svelte                  # app shell, auth gate, WS/inbox + SOS orchestration
-├── app.css                     # Tailwind theme, base styles, animations
-├── main.js
+├── App.svelte                   # auth gate, app shell, heartbeat, inbox/push/WS orchestration
+├── app.css                      # Tailwind theme, base styles, animations
+├── main.js                      # Svelte entry point
 └── lib/
-    ├── api.js                  # fetch client for the Go backend (raw-token auth)
-    ├── tracking.js             # WS live tracking: sender + responder channels
-    ├── push.js                 # browser Web Push: permission, subscribe/unsubscribe, silent re-sync
-    ├── rateLimit.js            # 429 Retry-After parsing + countdown formatting
-    ├── alertMeta.js            # alert labels, relative time, haversine distance
-    ├── stores.js               # Svelte session store (login/register/logout/restore)
-    ├── data.js                 # leftover demo fallback (ProfileView only)
+    ├── api.js                   # REST client, raw-token auth, multipart uploads
+    ├── stores.js                # session persistence and reverse-geocoded place store
+    ├── geo.js                   # shared location state and nearby polling
+    ├── tracking.js              # sender/responder WebSocket channels
+    ├── push.js                  # Web Push permission and subscription lifecycle
+    ├── mic.js                   # microphone permission and error handling
+    ├── place.js                 # cached Nominatim reverse geocoding
+    ├── rateLimit.js             # Retry-After parsing and cooldown formatting
+    ├── alertMeta.js             # labels, distance/ETA formatting, haversine distance
+    ├── data.js                  # remaining Profile demo fallback data
     └── components/
-        ├── AuthScreen.svelte   # sign in / create account
-        ├── BottomNav.svelte    # floating nav with centered SOS button
-        ├── SosButton.svelte    # hold-to-trigger button with progress ring
-        ├── AlertFlow.svelte    # describe → countdown → active + triage + 10 s audio → safe
-        ├── AlertIncoming.svelte# real inbox alert sheet + respond
-        ├── MapCard.svelte      # Leaflet/OSM: own dot, focus/live pins, masked responders, radius
-        ├── HomeView.svelte     # protection card, incoming banner, nearby responders (15 s poll)
-        ├── AlertsView.svelte
-        ├── ContactsView.svelte
-        └── ProfileView.svelte
+        ├── AuthScreen.svelte    # sign in / create account
+        ├── BottomNav.svelte     # floating navigation with centered SOS button
+        ├── SosButton.svelte     # pointer/keyboard hold-to-trigger control
+        ├── AlertFlow.svelte     # SOS, audio, triage, active alert, and resolve flow
+        ├── AlertIncoming.svelte # incoming alert and responder live view
+        ├── MapCard.svelte       # Leaflet map and alert/responder markers
+        ├── HomeView.svelte      # Home, nearby responders, and quick actions
+        ├── AlertsView.svelte    # active/incoming alert lists
+        ├── ContactsView.svelte  # emergency contacts
+        └── ProfileView.svelte   # profile and settings
 ```
 
-## Design notes
+## Backend integration notes
 
-- **Palette** — near-black ink, warm off-white canvas, signal red `#FF3B30` for emergency, emerald for "safe/protected", blue for location.
-- **Type** — Inter with tight tracking for headings, tabular numerals for timers.
-- **Motion** — breathing pins, SOS pulse rings, progress-ring countdown; everything respects `prefers-reduced-motion`.
-- **Accessibility** — labelled icon buttons, `aria-current` nav state, `aria-checked` switches, keyboard-hold SOS support, focus rings, live status text.
+- Success responses use `{ "data": ... }`; errors use
+  `{ "errors": "message" }` with the HTTP status.
+- Timestamps are epoch milliseconds.
+- Protected requests use the raw token, not `Bearer <token>`.
+- The backend currently keeps one session token per account. Logging in elsewhere
+  rotates that token and the previous client signs out on its next `401`.
+- Nearby coordinates are masked to roughly 100 m. Only users with a recent
+  heartbeat appear as responders; an empty map commonly means no other fresh
+  heartbeat exists.
+- WebSocket terminal statuses are `RESOLVED`, `CANCELLED`, and `EXPIRED`.
+- Browser push needs secure context and backend Web Push/VAPID configuration.
+  Audio transcription and live AI keys remain backend-only; never put them in
+  frontend env files or source.
+
+## Design and accessibility
+
+- Near-black ink, warm off-white canvas, signal red for emergencies, emerald for
+  safety, and blue for location.
+- Full-screen mobile layout with a centered 430 px app shell on larger screens.
+- Labelled icon buttons, keyboard-operable SOS hold, focus rings, navigation state,
+  switch state, and live status text.
+- Reduced-motion support for pulses and transitions.
+
+## Verification
+
+There is currently no frontend automated test suite.
+
+```bash
+npm run build
+```
+
+Then verify the real UI at `http://localhost:5173` with the backend running,
+including authentication, SOS/audio fallback, incoming response, maps, WebSocket
+tracking, and push permission behavior.

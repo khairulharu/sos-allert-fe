@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { Search, Plus, Phone, MessageCircle, BadgeCheck, MapPin, ChevronRight, X, Loader } from '@lucide/svelte'
+  import { Search, Plus, Phone, MessageCircle, BadgeCheck, ChevronRight, X, Loader } from '@lucide/svelte'
   import { contacts } from '$lib/api.js'
 
   let query = $state('')
@@ -16,7 +16,9 @@
     contacts_list.filter((person) => person.contact_name?.toLowerCase().includes(query.toLowerCase().trim())),
   )
 
-  onMount(async () => {
+  async function load() {
+    loading = true
+    error = ''
     try {
       const data = await contacts.list()
       contacts_list = Array.isArray(data) ? data : data?.data || []
@@ -25,7 +27,9 @@
     } finally {
       loading = false
     }
-  })
+  }
+
+  onMount(load)
 
   function initialsFor(name) {
     return (name || '?')
@@ -84,13 +88,13 @@
 <div class="px-5 pb-4 pt-7">
   <header class="flex items-start justify-between">
     <div>
-      <p class="text-[12px] font-medium text-muted">Your safety circle</p>
+      <p class="text-[13px] font-medium text-muted">Your safety circle</p>
       <h1 class="mt-1 text-[26px] font-semibold tracking-[-0.035em]">Contacts</h1>
     </div>
     <button
       type="button"
       onclick={toggleAdd}
-      class="inline-flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-[11px] font-semibold text-white transition active:scale-95"
+      class="inline-flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-[12.5px] font-semibold text-white transition active:scale-95"
     >
       {#if adding}
         <X size={14} strokeWidth={2.6} />
@@ -106,43 +110,43 @@
   {#if adding}
     <div class="card mt-4 space-y-2.5 p-4">
       <div>
-        <label for="contact-name" class="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted">Name</label>
+        <label for="contact-name" class="mb-1 block text-[12px] font-semibold uppercase tracking-wide text-muted">Name</label>
         <input
           id="contact-name"
           type="text"
           bind:value={form.contact_name}
           placeholder="e.g. Dewi Anwar"
-          class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[12.5px] font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
+          class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
         />
       </div>
       <div>
-        <label for="contact-phone" class="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted">Phone</label>
+        <label for="contact-phone" class="mb-1 block text-[12px] font-semibold uppercase tracking-wide text-muted">Phone</label>
         <input
           id="contact-phone"
           type="tel"
           bind:value={form.phone_number}
           placeholder="+62 812 3456 7890"
-          class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[12.5px] font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
+          class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
         />
       </div>
       <div>
-        <label for="contact-relationship" class="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-muted">Relationship</label>
+        <label for="contact-relationship" class="mb-1 block text-[12px] font-semibold uppercase tracking-wide text-muted">Relationship</label>
         <input
           id="contact-relationship"
           type="text"
           bind:value={form.relationship}
           placeholder="e.g. Mother"
-          class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[12.5px] font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
+          class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
         />
       </div>
       {#if addError}
-        <p class="text-[11px] font-medium text-sos">{addError}</p>
+        <p class="text-[12.5px] font-medium text-sos" role="alert">{addError}</p>
       {/if}
       <button
         type="button"
         onclick={createContact}
         disabled={saving}
-        class="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-ink py-2.5 text-[12px] font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
+        class="inline-flex w-full items-center justify-center gap-1.5 rounded-full bg-ink py-2.5 text-[13px] font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
       >
         {#if saving}
           <Loader size={14} class="animate-spin" />
@@ -163,62 +167,75 @@
       bind:value={query}
       placeholder="Search contacts"
       aria-label="Search contacts"
-      class="w-full rounded-full bg-white py-2.5 pl-10 pr-4 text-[12.5px] font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/80 focus:ring-2 focus:ring-ink/15"
+      class="w-full rounded-full bg-white py-2.5 pl-10 pr-4 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted focus:ring-2 focus:ring-ink/15"
     />
   </div>
 
   <!-- list -->
   <section class="mt-5">
     <div class="flex items-center justify-between px-0.5">
-      <h2 class="eyebrow text-ink/50">Trusted people</h2>
-      <span class="text-[10px] font-medium text-muted">{list.length} people</span>
+      <h2 class="eyebrow text-ink/60">Trusted people</h2>
+      <span class="text-[12px] font-medium text-muted">{list.length} {list.length === 1 ? 'contact' : 'contacts'}</span>
     </div>
 
     <div class="card mt-2.5 divide-y divide-line/80 overflow-hidden">
       {#if loading}
-        <div class="flex items-center justify-center gap-2.5 px-4 py-10 text-[12.5px] font-medium text-muted">
+        <div class="flex items-center justify-center gap-2.5 px-4 py-10 text-[13.5px] font-medium text-muted">
           <Loader size={15} class="animate-spin" />
           Loading contacts…
         </div>
       {:else if error}
+        <div class="px-4 py-10 text-center" role="alert">
+          <p class="text-[13.5px] font-semibold text-ink">Couldn't load contacts</p>
+          <p class="mt-1 text-[12.5px] text-muted">{error}</p>
+          <button type="button" onclick={load} class="mt-2 text-[13px] font-semibold text-ink underline underline-offset-4"
+            >Retry</button
+          >
+        </div>
+      {:else if contacts_list.length === 0}
         <div class="px-4 py-10 text-center">
-          <p class="text-[12.5px] font-semibold text-ink">Couldn't load contacts</p>
-          <p class="mt-1 text-[11px] text-muted">{error}</p>
+          <p class="text-[13.5px] font-semibold text-ink">No contacts yet</p>
+          <p class="mt-1 text-[12.5px] text-muted">Add your first emergency contact.</p>
         </div>
       {:else if list.length === 0}
         <div class="px-4 py-10 text-center">
-          <p class="text-[12.5px] font-semibold text-ink">No contacts yet</p>
-          <p class="mt-1 text-[11px] text-muted">Add your first emergency contact.</p>
+          <p class="text-[13.5px] font-semibold text-ink">No matches for “{query.trim()}”</p>
+          <p class="mt-1 text-[12.5px] text-muted">Try a different name or number.</p>
+          <button
+            type="button"
+            onclick={() => (query = '')}
+            class="mt-2 text-[13px] font-semibold text-ink underline underline-offset-4">Clear search</button
+          >
         </div>
       {:else}
         {#each list as person, i}
           <div class="flex items-center gap-3 px-4 py-3.5">
             <span class="relative shrink-0">
-              <span class="grid h-10 w-10 place-items-center rounded-full text-[12px] font-bold {toneFor(i)}"
+              <span class="grid h-10 w-10 place-items-center rounded-full text-[13px] font-bold {toneFor(i)}"
                 >{initialsFor(person.contact_name)}</span
               >
             </span>
 
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1">
-                <p class="truncate text-[13px] font-semibold text-ink">{person.contact_name}</p>
+                <p class="truncate text-[14px] font-semibold text-ink">{person.contact_name}</p>
                 {#if person.is_verified}
                   <BadgeCheck size={13} class="shrink-0 text-[#2F6BFF]" strokeWidth={2.3} />
                 {/if}
               </div>
-              <p class="mt-0.5 truncate text-[10.5px] text-muted">
+              <p class="mt-0.5 truncate text-[12px] text-muted">
                 {person.relationship || '—'} · {person.phone_number || '—'}
               </p>
             </div>
 
             <div class="flex shrink-0 items-center gap-1.5">
-              <button
-                type="button"
-                aria-label="Message {person.contact_name}"
-                class="grid h-8 w-8 place-items-center rounded-full bg-[#F5F6F8] text-ink/60 transition hover:bg-ink hover:text-white active:scale-95"
+              <a
+                href={'sms:' + encodeURIComponent(person.phone_number || '')}
+                aria-label={'Message ' + person.contact_name}
+                class="grid h-8 w-8 place-items-center rounded-full bg-[#E9F7F1] text-safe transition hover:bg-safe hover:text-white active:scale-95"
               >
                 <MessageCircle size={14} />
-              </button>
+              </a>
               <button
                 type="button"
                 aria-label="Call {person.contact_name}"
@@ -239,12 +256,12 @@
     onclick={toggleAdd}
     class="mt-4 flex w-full items-center gap-3 rounded-[20px] border border-dashed border-ink/15 bg-white/40 px-4 py-3.5 text-left transition hover:bg-white"
   >
-    <span class="grid h-10 w-10 place-items-center rounded-full bg-white text-ink/50 ring-1 ring-black/5">
+    <span class="grid h-10 w-10 place-items-center rounded-full bg-white text-ink/60 ring-1 ring-black/5">
       <Plus size={18} />
     </span>
     <span class="flex-1">
-      <span class="block text-[12.5px] font-semibold text-ink">Invite someone you trust</span>
-      <span class="mt-0.5 block text-[10.5px] text-muted">They'll be alerted when you need help.</span>
+      <span class="block text-[13.5px] font-semibold text-ink">Add another contact</span>
+      <span class="mt-0.5 block text-[12px] text-muted">Kept on your account. They are not messaged automatically.</span>
     </span>
     <ChevronRight size={16} class="text-muted" />
   </button>

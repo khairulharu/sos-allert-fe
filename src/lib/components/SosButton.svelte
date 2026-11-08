@@ -70,7 +70,7 @@
 <div class="relative flex flex-col items-center">
   {#if holding}
     <span
-      class="absolute -top-11 whitespace-nowrap rounded-full bg-ink px-3 py-1.5 text-[10.5px] font-semibold text-white shadow-lg"
+      class="absolute -top-11 whitespace-nowrap rounded-full bg-ink px-3 py-1.5 text-[12px] font-semibold text-white shadow-lg"
       >Keep holding…</span
     >
   {/if}
@@ -92,7 +92,7 @@
       onkeydown={onkeydown}
       onkeyup={onkeyup}
       oncontextmenu={(event) => event.preventDefault()}
-      class="group relative grid h-[70px] w-[70px] touch-none select-none place-items-center rounded-full bg-gradient-to-b from-[#FF5B50] to-[#DD2019] text-white ring-[5px] ring-white transition-transform duration-150 active:scale-95"
+      class="group relative grid h-[70px] w-[70px] touch-none select-none place-items-center rounded-full bg-gradient-to-b from-[#FF5B50] to-[#DD2019] text-white ring-[5px] ring-white transition-transform duration-150 active:scale-[0.98]"
       style="box-shadow: 0 14px 30px -8px rgba(221, 32, 25, 0.65), inset 0 1px 0 rgba(255,255,255,0.35)"
     >
       <svg class="pointer-events-none absolute inset-0 h-full w-full -rotate-90" viewBox="0 0 100 100">
@@ -110,7 +110,7 @@
       </svg>
       <span class="relative flex flex-col items-center leading-none">
         <span class="text-[15px] font-bold tracking-tight">SOS</span>
-        <span class="mt-0.5 text-[7.5px] font-semibold uppercase tracking-[0.12em] text-white/70"
+        <span class="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/70"
           >hold</span
         >
       </span>

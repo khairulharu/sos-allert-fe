@@ -5,7 +5,9 @@
 
   --color-canvas: #f4f5f7;
   --color-ink: #0d0f13;
-  --color-muted: #7b818c;
+  /* 5.96:1 on white and 5.46:1 on --color-canvas; the old #7b818c was 3.92/3.59
+     and every secondary label in the app sits on one of those two surfaces. */
+  --color-muted: #5b6270;
   --color-line: #e9ebef;
   --color-sos: #ff3b30;
   --color-sos-deep: #d91f18;
@@ -43,7 +45,7 @@
   }
 
   .eyebrow {
-    @apply text-[10.5px] font-semibold uppercase tracking-[0.15em] text-muted;
+    @apply text-[12px] font-semibold uppercase tracking-[0.13em] text-muted;
   }
 
   .no-scrollbar {

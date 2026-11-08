@@ -10,6 +10,19 @@ export function emergencyLabel(type) {
   return TYPE_LABELS[type] || 'SOS'
 }
 
+/**
+ * Severity as a word. The raw 0–1 float is a backend value and reads as noise in
+ * the UI ("severity 0.72"); the word is what a responder can act on.
+ */
+export function severityWord(severity) {
+  const value = Number(severity)
+  if (severity === null || severity === undefined || !Number.isFinite(value)) return ''
+  if (value >= 0.75) return 'Critical'
+  if (value >= 0.5) return 'High'
+  if (value >= 0.25) return 'Medium'
+  return 'Low'
+}
+
 export function initialsFor(name) {
   return (name || '?')
     .split(/\s+/)

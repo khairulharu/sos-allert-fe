@@ -187,10 +187,22 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   answered 2 min ago" line from a `ResponderSummary`/`RESPONDER_ADDED` payload),
   and `distanceMeters` (haversine) shared by the incoming sheet, Home banner and
   the SOS screen.
+- `src/lib/focus.js` — `trap(node, { initial })`, the Svelte action both
+  full-screen dialogs use (`AlertFlow`, `AlertIncoming`). On mount it focuses the
+  first `[data-autofocus]` (or first visible focusable) inside the node, wraps
+  Tab/Shift-Tab inside the panel, and restores the previously focused element on
+  destroy. `App.svelte` sets `inert` on `<main>` and the bottom nav while a sheet
+  is open (`modalOpen = sosOpen || (incomingOpen && pendingAlert)`), so nothing
+  behind the overlay is reachable. Any new modal needs both halves: `use:trap`
+  on the panel and inclusion in `modalOpen`.
 - `src/lib/stores.js` — session store. **Do not regress** `restoreSession()`:
   it must use `getToken()` (localStorage key `sos_alert_token`), never
   `user.id`. Using `user.id` caused every authenticated call after login to
   return 401 (fixed in commit `97dc741`).
+  `locationSharing` (localStorage key `sos_alert_location_sharing`, default on)
+  is the Profile "Live location" switch: `App.svelte`'s heartbeat skips the `PUT`
+  while it is off and publishes once when it is turned back on, so the privacy
+  control is real. `lastTriage` holds the newest AI triage for the alert flow.
   `logout()` must revoke **the session this tab owns** — it reads
   `getSessionToken()` (the in-memory token, never the shared localStorage) and
   passes it to `auth.logout(token)`. The backend keeps a single token per user
@@ -313,10 +325,16 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   dropped when the alert ends or the sheet closes.
 - `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
-- `src/lib/components/ProfileView.svelte` — profile + settings toggles. The
-  `push` toggle is real: state comes from `pushPermissionState()` on mount and
-  the click handler calls `enablePush()`/`disablePush()`, showing `PUSH_HELP`
-  copy in the row hint when it fails. The other toggles are still local state.
+- `src/lib/components/ProfileView.svelte` — profile + real settings. No mock
+  identity and no fabricated numbers: `user` defaults to `{}`, the two stats are
+  the live contact count (`contacts.list()`, `—` until it answers) and
+  `$responders.length` from `$lib/geo.js`, and the emergency-info card is a
+  read-only "No medical information saved" until the backend exposes a field to
+  store it. Only two toggles exist, both wired: **Live location**
+  (`$locationSharing` ↔ `locationSharing.update`) and **Push notifications**
+  (`pushPermissionState()` on mount, `enablePush()`/`disablePush()` on click,
+  `PUSH_HELP` copy in the row hint when it fails). Siren and auto-call were
+  deleted — the backend supports neither.
 
 ## Location API for the responder map
 
@@ -555,6 +573,31 @@ SOS shows a real OS notification even while the tab is in the background.
   `Retry-After` at all, so the UI shows the backend message and hides "Try
   again".
 - `backend/config.json` and `ca.pem` are gitignored; never commit them here.
+
+## Interface standards
+
+Distilled from `REVIEW-REPORT-DESIGN.md` (the full review) and the fixes that
+followed it. Regressions here were what the review called out, so keep them.
+
+- **Type floor**: 12 px for metadata and body copy, 11 px only for a single
+  uppercase tag (`.eyebrow`, map chips, Leaflet attribution), headings 25–26 px.
+  Every form input is `text-[16px]` — below 16 px iOS Safari zooms the page on
+  focus.
+- **Contrast**: `--color-muted` is `#5b6270` (5.96:1 on white, 5.46:1 on canvas)
+  and is the only muted token; on dark surfaces use `text-white/60` or higher,
+  never `white/30`–`white/50`. White on `#EE2B22` is 4.20:1, so no text below
+  19 px sits directly on the SOS red.
+- **Dialogs**: `role="dialog" aria-modal="true"` + accessible name + `use:trap`
+  from `src/lib/focus.js` + inclusion in `App.svelte`'s `modalOpen` (which sets
+  `inert` on the shell). Both halves are required.
+- **Controls act or are not controls.** A `button` has a handler, a link has a
+  real `href` (`tel:`, `sms:`, `https:`), and nothing reports success before the
+  platform call resolved. Delete rather than decorate an unimplemented feature.
+- **No backend internals in copy**: `emergencyLabel()` + `severityWord()` from
+  `src/lib/alertMeta.js` replace raw enums and numeric scores.
+- **The severity bar** uses an inline style (`sevWidth()` returns `"80%"`);
+  Tailwind never emits an interpolated `w-[NN%]` class, so that form renders an
+  empty bar.
 
 ## Verification
 

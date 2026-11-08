@@ -2,7 +2,6 @@
   import { onMount } from 'svelte'
   import {
     Bell,
-    ChevronDown,
     MapPin,
     Phone,
     Send,
@@ -115,8 +114,22 @@
   })
 
   const quickActions = $derived([
-    { id: 'call', label: 'Call 112', hint: 'Emergency', icon: Phone, tone: 'bg-[#FFECEB] text-sos' },
-    { id: 'share', label: 'Share location', hint: 'Live 60 min', icon: Send, tone: 'bg-[#EAF0FF] text-[#2F6BFF]' },
+    {
+      id: 'call',
+      label: 'Call 112',
+      hint: 'Emergency',
+      icon: Phone,
+      tone: 'bg-[#FFECEB] text-sos',
+      href: 'tel:112',
+      ariaLabel: 'Call 112 emergency services',
+    },
+    {
+      id: 'share',
+      label: 'Share location',
+      hint: 'Via Maps link',
+      icon: Send,
+      tone: 'bg-[#EAF0FF] text-[#2F6BFF]',
+    },
     {
       id: 'contacts',
       label: 'Contacts',
@@ -127,12 +140,37 @@
   ])
 
   function runAction(id) {
-    if (id === 'contacts') {
-      onnavigate?.('contacts')
-    } else if (id === 'call') {
-      onnotify?.('Calling emergency services · 112')
-    } else {
-      onnotify?.('Live location link copied — active for 60 min.')
+    if (id === 'contacts') onnavigate?.('contacts')
+    else if (id === 'share') shareLocation()
+  }
+
+  // Only a resolved platform call counts as success: the Web Share API when
+  // the browser has it, otherwise the clipboard. A cancelled share fires
+  // AbortError and stays silent.
+  async function shareLocation() {
+    if (!coords) {
+      onnotify?.('Waiting for your location — try again in a moment')
+      return
+    }
+    const text = `My live location: https://www.google.com/maps?q=${coords.lat},${coords.lng}`
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+        try {
+          await navigator.share({ title: 'My location', text })
+        } catch (err) {
+          if (err?.name === 'AbortError') return
+          throw err
+        }
+        return
+      }
+      if (typeof navigator.clipboard?.writeText === 'function') {
+        await navigator.clipboard.writeText(text)
+        onnotify?.('Location link copied')
+        return
+      }
+      onnotify?.('This browser cannot share your location link')
+    } catch {
+      onnotify?.('Could not share your location')
     }
   }
 </script>
@@ -146,14 +184,15 @@
         <Siren size={16} class="relative text-white" strokeWidth={2.4} />
       </span>
       <div class="leading-none">
-        <p class="text-[13px] font-bold tracking-[-0.01em]">sos<span class="text-sos">.</span>alert</p>
-        <p class="mt-1 text-[9px] font-medium uppercase tracking-[0.14em] text-muted">Community safety</p>
+        <p class="text-[14px] font-bold tracking-[-0.01em]">sos<span class="text-sos">.</span>alert</p>
+        <p class="mt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted">Community safety</p>
       </div>
     </div>
     <div class="flex items-center gap-2">
       <button
         type="button"
-        aria-label="Notifications"
+        aria-label="Alerts"
+        onclick={() => onnavigate?.('alerts')}
         class="relative grid h-9 w-9 place-items-center rounded-full bg-white text-ink/70 ring-1 ring-black/5 transition hover:text-ink active:scale-95"
       >
         <Bell size={17} strokeWidth={2} />
@@ -163,7 +202,7 @@
         type="button"
         aria-label="Open profile"
         onclick={() => onnavigate?.('profile')}
-        class="grid h-9 w-9 place-items-center rounded-full bg-[#1F2937] text-[11px] font-bold text-white ring-2 ring-white transition active:scale-95"
+        class="grid h-9 w-9 place-items-center rounded-full bg-[#1F2937] text-[12.5px] font-bold text-white ring-2 ring-white transition active:scale-95"
         >{initials}</button
       >
     </div>
@@ -171,18 +210,16 @@
 
   <!-- greeting -->
   <div class="mt-5">
-    <p class="text-[12px] font-medium text-muted">{today}</p>
+    <p class="text-[13px] font-medium text-muted">{today}</p>
     <h1 class="mt-1 text-[26px] font-semibold leading-[1.15] tracking-[-0.035em]">
       {greeting}, {name}
     </h1>
-    <button
-      type="button"
-      class="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[11px] font-semibold text-ink/80 ring-1 ring-black/5 transition hover:text-ink active:scale-95"
+    <div
+      class="mt-2.5 inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-[12.5px] font-semibold text-ink/80 ring-1 ring-black/5"
     >
       <MapPin size={12} class="text-sos" strokeWidth={2.6} />
       {areaLabel}
-      <ChevronDown size={12} class="text-muted" />
-    </button>
+    </div>
   </div>
 
   <!-- incoming alert -->
@@ -195,17 +232,17 @@
         <Siren size={16} class="relative text-sos" strokeWidth={2.3} />
       </span>
       <button type="button" onclick={onviewalert} class="min-w-0 flex-1 text-left">
-        <p class="truncate text-[12px] font-semibold leading-tight text-[#8f1d17]">
+        <p class="truncate text-[13px] font-semibold leading-tight text-[#8f1d17]">
           SOS nearby · {incomingName}
         </p>
-        <p class="mt-0.5 text-[11px] leading-tight text-[#b0544f]">
+        <p class="mt-0.5 text-[12.5px] leading-tight text-[#b0544f]">
           {incomingType} · {incomingDistanceText} away · {incomingWhen}
         </p>
       </button>
       <button
         type="button"
         onclick={onviewalert}
-        class="shrink-0 rounded-full bg-sos px-3 py-1.5 text-[10.5px] font-semibold text-white transition active:scale-95"
+        class="shrink-0 rounded-full bg-sos px-3 py-1.5 text-[12px] font-semibold text-white transition active:scale-95"
         >Respond</button
       >
       <button
@@ -224,12 +261,12 @@
     <div class="flex items-end justify-between px-0.5">
       <div>
         <h2 class="text-[15px] font-semibold tracking-[-0.01em]">Around you</h2>
-        <p class="mt-0.5 text-[11px] text-muted">Live safety map · updates every 15 s</p>
+        <p class="mt-0.5 text-[12.5px] text-muted">Live safety map · updates every 15 s</p>
       </div>
       <button
         type="button"
         onclick={() => onnavigate?.('contacts')}
-        class="text-[11px] font-semibold text-ink/60 transition hover:text-ink">View all</button
+        class="text-[12.5px] font-semibold text-ink/60 transition hover:text-ink">View all</button
       >
     </div>
 
@@ -249,8 +286,13 @@
   <section class="mt-4 grid grid-cols-3 gap-2.5">
     {#each quickActions as action}
       {@const Icon = action.icon}
-      <button
-        type="button"
+      <!-- Call 112 is a real tel: link; the other two are buttons. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <svelte:element
+        this={action.href ? 'a' : 'button'}
+        href={action.href}
+        type={action.href ? undefined : 'button'}
+        aria-label={action.ariaLabel}
         onclick={() => runAction(action.id)}
         class="card flex flex-col items-start gap-2.5 rounded-[20px] p-3 text-left transition active:scale-[0.98]"
       >
@@ -258,10 +300,10 @@
           <Icon size={15} strokeWidth={2.2} />
         </span>
         <span class="leading-tight">
-          <span class="block text-[11.5px] font-semibold text-ink">{action.label}</span>
-          <span class="mt-0.5 block text-[10px] text-muted">{action.hint}</span>
+          <span class="block text-[13px] font-semibold text-ink">{action.label}</span>
+          <span class="mt-0.5 block text-[12px] text-muted">{action.hint}</span>
         </span>
-      </button>
+      </svelte:element>
     {/each}
   </section>
 
@@ -270,12 +312,12 @@
     <div class="flex items-end justify-between px-0.5">
       <div>
         <h2 class="text-[15px] font-semibold tracking-[-0.01em]">Nearby responders</h2>
-        <p class="mt-0.5 text-[11px] text-muted">Approximate positions · no personal details</p>
+        <p class="mt-0.5 text-[12.5px] text-muted">Approximate positions · no personal details</p>
       </div>
       <button
         type="button"
         onclick={() => onnavigate?.('contacts')}
-        class="text-[11px] font-semibold text-ink/60 transition hover:text-ink">See all</button
+        class="text-[12.5px] font-semibold text-ink/60 transition hover:text-ink">See all</button
       >
     </div>
 
@@ -284,7 +326,7 @@
         {#each responderView.slice(0, 3) as person}
           <div class="flex w-full items-center gap-3 px-4 py-3 text-left">
             <span class="relative">
-              <span class="grid h-10 w-10 place-items-center rounded-full text-[12px] font-bold {person.tone}"
+              <span class="grid h-10 w-10 place-items-center rounded-full text-[13px] font-bold {person.tone}"
                 >{person.initials}</span
               >
               <span
@@ -292,25 +334,25 @@
               ></span>
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-[13px] font-semibold text-ink">Responder</span>
-              <span class="mt-0.5 block text-[11px] text-muted"
+              <span class="block truncate text-[14px] font-semibold text-ink">Responder</span>
+              <span class="mt-0.5 block text-[12.5px] text-muted"
                 >{person.distance} away · active {person.seen}</span
               >
             </span>
-            <span class="rounded-full bg-[#F5F6F8] px-2 py-1 text-[9.5px] font-semibold text-ink/55"
+            <span class="rounded-full bg-[#F5F6F8] px-2 py-1 text-[11px] font-semibold text-ink/55"
               >Live</span
             >
           </div>
         {/each}
       {:else if $nearbyLoading}
         <div class="px-4 py-8 text-center">
-          <p class="text-[12.5px] font-semibold text-ink">Locating responders…</p>
-          <p class="mt-1 text-[11px] text-muted">Using your latest heartbeat.</p>
+          <p class="text-[13.5px] font-semibold text-ink">Locating responders…</p>
+          <p class="mt-1 text-[12.5px] text-muted">Using your latest heartbeat.</p>
         </div>
       {:else}
         <div class="px-4 py-8 text-center">
-          <p class="text-[12.5px] font-semibold text-ink">No responders nearby</p>
-          <p class="mt-1 text-[11px] text-muted">{$nearbyError || 'Coverage updates in real time.'}</p>
+          <p class="text-[13.5px] font-semibold text-ink">No responders nearby</p>
+          <p class="mt-1 text-[12.5px] text-muted">{$nearbyError || 'Coverage updates in real time.'}</p>
         </div>
       {/if}
     </div>
@@ -323,7 +365,7 @@
       <button
         type="button"
         onclick={() => onnavigate?.('alerts')}
-        class="text-[11px] font-semibold text-ink/60 transition hover:text-ink">History</button
+        class="text-[12.5px] font-semibold text-ink/60 transition hover:text-ink">History</button
       >
     </div>
 
@@ -347,11 +389,11 @@
               {/if}
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-[12.5px] font-semibold text-ink">{item.title}</span>
-              <span class="mt-0.5 block text-[11px] text-muted">{item.date} · {item.time} · {item.place}</span>
+              <span class="block truncate text-[13.5px] font-semibold text-ink">{item.title}</span>
+              <span class="mt-0.5 block text-[12.5px] text-muted">{item.date} · {item.time} · {item.place}</span>
             </span>
             <span
-              class="rounded-full px-2 py-1 text-[9.5px] font-semibold {item.status === 'Cancelled'
+              class="rounded-full px-2 py-1 text-[11px] font-semibold {item.status === 'Cancelled'
                 ? 'bg-[#F3F4F6] text-muted'
                 : 'bg-[#E9F7F1] text-[#087a54]'}">{item.status}</span
             >
@@ -359,14 +401,14 @@
         {/each}
       {:else}
         <div class="px-4 py-8 text-center">
-          <p class="text-[12.5px] font-semibold text-ink">No recent activity</p>
-          <p class="mt-1 text-[11px] text-muted">Sent and received alerts will appear here.</p>
+          <p class="text-[13.5px] font-semibold text-ink">No recent activity</p>
+          <p class="mt-1 text-[12.5px] text-muted">Sent and received alerts will appear here.</p>
         </div>
       {/if}
     </div>
   </section>
 
-  <p class="mt-6 text-center text-[10px] leading-relaxed text-muted/80">
+  <p class="mt-6 text-center text-[12px] leading-relaxed text-muted">
     Alerts reach responders within a 1 km radius.<br />
     In immediate danger, call <span class="font-semibold text-ink/70">112</span>.
   </p>

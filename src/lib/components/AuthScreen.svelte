@@ -16,6 +16,7 @@
   let name = $state('')
   let showPass = $state(false)
   let error = $state('')
+  let errorField = $state('')
   let busy = $state(false)
   let hint = $state('')
   let cooldown = $state(0)
@@ -49,16 +50,19 @@
     // this client holding a token the server no longer accepts.
     if (busy) return
     error = ''
+    errorField = ''
     hint = ''
     if (cooldown > 0) {
       error = `Too many attempts. Try again in ${formatCooldown(cooldown)}.`
       return
     }
     if (!id.trim() || password.length < 4) {
+      errorField = !id.trim() ? 'id' : 'password'
       error = 'Enter a user ID and a password of at least 4 characters.'
       return
     }
     if (mode === 'signup' && !name.trim()) {
+      errorField = 'name'
       error = 'Enter your display name.'
       return
     }
@@ -83,12 +87,6 @@
       busy = false
     }
   }
-
-  function toggleMode() {
-    mode = mode === 'login' ? 'signup' : 'login'
-    error = ''
-    hint = ''
-  }
 </script>
 
 <div class="relative flex min-h-dvh w-full items-center justify-center overflow-hidden bg-[#E7E9ED]">
@@ -106,7 +104,7 @@
       <h1 class="mt-4 text-[26px] font-semibold tracking-[-0.03em]">
         sos<span class="text-sos">.</span>alert
       </h1>
-      <p class="mt-1.5 max-w-[280px] text-[12.5px] leading-relaxed text-muted">
+      <p class="mt-1.5 max-w-[280px] text-[13.5px] leading-relaxed text-muted">
         Community safety. One hold on the SOS button gets AI-prioritized help to your location.
       </p>
     </div>
@@ -118,7 +116,7 @@
           type="button"
           onclick={() => (mode = 'login')}
           aria-pressed={mode === 'login'}
-          class="flex-1 rounded-full py-2 text-[11.5px] font-semibold transition {mode === 'login'
+          class="flex min-h-[44px] flex-1 items-center justify-center rounded-full py-2 text-[13px] font-semibold transition {mode === 'login'
             ? 'bg-white text-ink shadow-sm'
             : 'text-muted hover:text-ink'}"
         >Sign in</button>
@@ -126,7 +124,7 @@
           type="button"
           onclick={() => (mode = 'signup')}
           aria-pressed={mode === 'signup'}
-          class="flex-1 rounded-full py-2 text-[11.5px] font-semibold transition {mode === 'signup'
+          class="flex min-h-[44px] flex-1 items-center justify-center rounded-full py-2 text-[13px] font-semibold transition {mode === 'signup'
             ? 'bg-white text-ink shadow-sm'
             : 'text-muted hover:text-ink'}"
         >Create account</button>
@@ -135,68 +133,75 @@
       <form class="mt-5 space-y-3" onsubmit={(e) => { e.preventDefault(); submit() }}>
         {#if mode === 'signup'}
           <label class="block">
-            <span class="mb-1 block text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted">Display name</span>
+            <span class="mb-1 block text-[12px] font-semibold uppercase tracking-[0.1em] text-muted">Display name</span>
             <input
               bind:value={name}
               oninput={suggestId}
               type="text"
               placeholder="e.g. Khairul"
               autocomplete="name"
-              class="w-full rounded-2xl bg-[#F5F6F8] px-4 py-3 text-[13px] font-medium text-ink outline-none ring-1 ring-black/[0.04] placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
+              aria-invalid={errorField === 'name' ? 'true' : undefined}
+              aria-describedby={errorField === 'name' ? 'auth-error' : undefined}
+              class="w-full rounded-2xl bg-[#F5F6F8] px-4 py-3 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/[0.04] placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
             />
           </label>
         {/if}
 
         <label class="block">
-          <span class="mb-1 block text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted">User ID</span>
+          <span class="mb-1 block text-[12px] font-semibold uppercase tracking-[0.1em] text-muted">User ID</span>
           <input
             bind:value={id}
             type="text"
             placeholder="e.g. khairul_bali"
             autocomplete="username"
-            class="w-full rounded-2xl bg-[#F5F6F8] px-4 py-3 text-[13px] font-medium text-ink outline-none ring-1 ring-black/[0.04] placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
+            aria-invalid={errorField === 'id' ? 'true' : undefined}
+            aria-describedby={errorField === 'id' ? 'auth-error' : undefined}
+            class="w-full rounded-2xl bg-[#F5F6F8] px-4 py-3 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/[0.04] placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
           />
         </label>
 
         <label class="block">
-          <span class="mb-1 block text-[10.5px] font-semibold uppercase tracking-[0.1em] text-muted">Password</span>
+          <span class="mb-1 block text-[12px] font-semibold uppercase tracking-[0.1em] text-muted">Password</span>
           <div class="relative">
             <input
               bind:value={password}
               type={showPass ? 'text' : 'password'}
               placeholder="••••••••"
               autocomplete={mode === 'signup' ? 'new-password' : 'current-password'}
-              class="w-full rounded-2xl bg-[#F5F6F8] px-4 py-3 pr-11 text-[13px] font-medium text-ink outline-none ring-1 ring-black/[0.04] placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
+              aria-invalid={errorField === 'password' ? 'true' : undefined}
+              aria-describedby={errorField === 'password' ? 'auth-error' : undefined}
+              class="w-full rounded-2xl bg-[#F5F6F8] px-4 py-3 pr-11 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/[0.04] placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
             />
             <button
               type="button"
               aria-label={showPass ? 'Hide password' : 'Show password'}
               onclick={() => (showPass = !showPass)}
-              class="absolute right-3 top-1/2 -translate-y-1/2 text-muted transition hover:text-ink"
+              class="absolute right-3 top-1/2 -mr-2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full text-muted transition hover:text-ink"
             >{#if showPass}<EyeOff size={16} />{:else}<Eye size={16} />{/if}</button>
           </div>
         </label>
 
         {#if notice}
-          <p class="rounded-2xl bg-[#FFF6E5] px-3.5 py-2.5 text-[11.5px] font-medium text-[#8a5a00]">
+          <p class="rounded-2xl bg-[#FFF6E5] px-3.5 py-2.5 text-[13px] font-medium text-[#8a5a00]">
             {notice}
           </p>
         {/if}
         {#if error}
           <p
+            id="auth-error"
             role="alert"
-            class="rounded-2xl bg-[#FFECEB] px-3.5 py-2.5 text-[11.5px] font-medium text-[#b3241d]"
+            class="rounded-2xl bg-[#FFECEB] px-3.5 py-2.5 text-[13px] font-medium text-[#b3241d]"
           >
             {error}
             {#if cooldown > 0}
-              <span class="mt-1 block text-[10px] font-normal text-[#b3241d]/80">
+              <span class="mt-1 block text-[12px] font-normal text-[#b3241d]/80">
                 Sign in and registration share the same limit.
               </span>
             {/if}
           </p>
         {/if}
         {#if hint}
-          <p class="rounded-2xl bg-[#E9F7F1] px-3.5 py-2.5 text-[11.5px] font-medium text-[#087a54]">
+          <p class="rounded-2xl bg-[#E9F7F1] px-3.5 py-2.5 text-[13px] font-medium text-[#087a54]">
             {hint}
           </p>
         {/if}
@@ -204,7 +209,7 @@
         <button
           type="submit"
           disabled={busy || cooldown > 0}
-          class="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-3.5 text-[13px] font-semibold text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          class="flex w-full items-center justify-center gap-2 rounded-full bg-ink py-3.5 text-[14px] font-semibold text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {#if busy}<Loader2 size={15} class="animate-spin" />{/if}
           {#if cooldown > 0}
@@ -217,9 +222,16 @@
     </div>
 
     <!-- reassurance -->
-    <div class="mt-6 flex items-center justify-center gap-5 text-[10.5px] font-medium text-muted">
-      <span class="inline-flex items-center gap-1"><MapPin size={11} class="text-sos" /> Location only during SOS</span>
-      <span class="inline-flex items-center gap-1"><ShieldCheck size={11} class="text-safe" /> Verified responders</span>
+    <div
+      class="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 text-[12px] font-medium text-muted"
+    >
+      <span class="inline-flex items-center gap-1 text-center"
+        ><MapPin size={11} class="shrink-0 text-sos" /> Location only during SOS</span
+      >
+      <span class="inline-flex items-center gap-1 text-center"
+        ><ShieldCheck size={11} class="shrink-0 text-safe" /> Nearby responders who share their
+        location</span
+      >
     </div>
   </div>
 </div>

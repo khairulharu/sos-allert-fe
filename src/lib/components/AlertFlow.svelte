@@ -4,7 +4,6 @@
   import {
     X,
     Phone,
-    MessageCircle,
     ShieldCheck,
     Check,
     MapPin,
@@ -20,8 +19,9 @@
   import MapCard from './MapCard.svelte'
   import { MIC_HELP, micBlockReason, micErrorText } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
-  import { initialsFor, responderMeta } from '$lib/alertMeta.js'
+  import { initialsFor, responderMeta, severityWord } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
+  import { trap } from '$lib/focus.js'
 
   let {
     onclose,
@@ -118,9 +118,16 @@
 
   function pad(v) { return String(v).padStart(2, '0') }
   function elapsedLabel(s) { return `${pad(Math.floor(s / 60))}:${pad(s % 60)}` }
-  function sevLabel(s) { return `${Math.round(s * 100)}%` }
+  function sevLabel(s) { return severityWord(s) }
   function sevColor(s) { return s >= 0.67 ? 'text-[#FF8080]' : s >= 0.34 ? 'text-[#FFD580]' : 'text-[#A8E6CF]' }
-  function sevBar(s) { return `w-[${Math.round(s * 100)}%]` }
+  // Tailwind cannot generate a class from a runtime percentage, so the bar
+  // width has to be an inline style — the old `w-[${…}%]` class never existed in
+  // the compiled CSS and the bar stayed empty for every severity.
+  function sevWidth(s) {
+    const value = Number(s)
+    if (!Number.isFinite(value)) return '0%'
+    return `${Math.round(Math.min(1, Math.max(0, value)) * 100)}%`
+  }
 
   // The backend re-classifies from the audio transcript: the media upload
   // answers with `triage` and the tracking socket broadcasts ALERT_TRIAGE.
@@ -641,6 +648,8 @@
   role="dialog"
   aria-modal="true"
   aria-label="Emergency SOS"
+  tabindex="-1"
+  use:trap={{ initial: '[data-autofocus]' }}
 >
 
 {#if phase === 'describe'}
@@ -651,7 +660,7 @@
 
   <div class="relative flex h-full flex-col px-6 pb-8 pt-7 text-white">
     <div class="flex items-center justify-between">
-      <span class="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] ring-1 ring-white/20 backdrop-blur">
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-bold uppercase tracking-[0.16em] ring-1 ring-white/20 backdrop-blur">
         <AlertTriangle size={12} />
         AI Emergency Assessment
       </span>
@@ -671,7 +680,7 @@
       <h2 class="text-center text-[22px] font-semibold tracking-[-0.02em]">
         What happened?
       </h2>
-      <p class="mt-2 max-w-[270px] text-center text-[12.5px] leading-relaxed text-white/70">
+      <p class="mt-2 max-w-[270px] text-center text-[13.5px] leading-relaxed text-white/70">
         Describe briefly — the AI will classify urgency and find the right responders nearby.
       </p>
 
@@ -679,14 +688,15 @@
         <textarea
           bind:value={description}
           rows="3"
-          placeholder="e.g. Ada orang pingsan di pantai dan tidak sadar"
+          data-autofocus
+          placeholder="e.g. Someone collapsed at the beach and is unresponsive"
           aria-label="Emergency description"
-          class="w-full resize-none rounded-2xl bg-white/15 px-4 py-3 text-[13px] font-medium text-white placeholder:text-white/50 outline-none ring-1 ring-white/20 focus:ring-2 focus:ring-white/50 backdrop-blur"
+          class="w-full resize-none rounded-2xl bg-black/25 px-4 py-3 text-[16px] font-medium leading-snug text-white placeholder:text-white/75 outline-none ring-1 ring-white/25 backdrop-blur focus:ring-2 focus:ring-white"
         ></textarea>
       </div>
 
       <!-- Severity preview hint -->
-      <div class="mt-3 flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-[11px] text-white/60">
+      <div class="mt-3 flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-[12.5px] text-white/60">
         <span class="h-1.5 w-1.5 rounded-full bg-[#FFD580]"></span>
         The next 10 s are recorded, then classified by AI
       </div>
@@ -696,11 +706,11 @@
       <button
         type="button"
         onclick={startCountdown}
-        class="w-full rounded-full bg-white py-3.5 text-[13.5px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]"
+        class="w-full rounded-full bg-white py-3.5 text-[14px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]"
       >
         Continue → Send SOS
       </button>
-      <p class="text-center text-[10.5px] text-white/60">
+      <p class="text-center text-[12px] text-white/60">
         10 seconds of audio for AI triage — cancel before it ends to send nothing.
       </p>
     </div>
@@ -714,7 +724,7 @@
 
   <div class="relative flex h-full flex-col px-6 pb-8 pt-7 text-white">
     <div class="flex items-center justify-between">
-      <span class="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.16em] ring-1 ring-white/20 backdrop-blur">
+      <span class="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-1.5 text-[12px] font-bold uppercase tracking-[0.16em] ring-1 ring-white/20 backdrop-blur">
         <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-white"></span>
         Emergency SOS
       </span>
@@ -744,11 +754,11 @@
           </svg>
           <div class="flex flex-col items-center">
             <span class="text-[86px] font-semibold leading-none tracking-[-0.06em] tabular-nums">{countdown}</span>
-            <span class="mt-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-white/70">seconds</span>
+            <span class="mt-1 text-[12.5px] font-semibold uppercase tracking-[0.2em] text-white/70">seconds</span>
           </div>
         </div>
         <h2 class="mt-7 text-center text-[22px] font-semibold tracking-[-0.02em]">Sending SOS in {countdown}</h2>
-        <p class="mt-2 max-w-[280px] text-center text-[12.5px] leading-relaxed text-white/70">
+        <p class="mt-2 max-w-[280px] text-center text-[13.5px] leading-relaxed text-white/70">
           {#if captureState === 'recording'}
             Recording audio — the AI classifies it and alerts the nearest responders when the countdown ends.
           {:else if captureState === 'starting'}
@@ -759,10 +769,10 @@
         </p>
 
         <div
-          class="mt-5 flex max-w-[300px] items-center gap-2 rounded-full px-3.5 py-2 text-[11px] font-medium ring-1 backdrop-blur {captureState ===
+          class="mt-5 flex max-w-[300px] items-center gap-2 rounded-full px-3.5 py-2 text-[12.5px] font-medium ring-1 backdrop-blur {captureState ===
           'recording'
             ? 'bg-white/20 text-white ring-white/25'
-            : 'bg-white/10 text-white/70 ring-white/15'}"
+            : 'bg-black/25 text-white ring-white/20'}"
         >
           {#if captureState === 'recording'}
             <span class="relative flex h-2 w-2">
@@ -780,17 +790,17 @@
           {/if}
         </div>
         {#if captureError}
-          <p class="mt-2 max-w-[300px] text-center text-[10px] leading-snug text-white/70">
+          <p class="mt-2 max-w-[300px] rounded-xl bg-black/30 px-3 py-2 text-center text-[12px] leading-snug text-white">
             {captureError}
           </p>
         {/if}
       </div>
       <div class="space-y-2.5">
         <button type="button" onclick={stop}
-          class="w-full rounded-full bg-white py-3.5 text-[13.5px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]">
+          class="w-full rounded-full bg-white py-3.5 text-[14px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]">
           Cancel alert
         </button>
-        <p class="text-center text-[10.5px] text-white/60">Accidental tap? You can still cancel.</p>
+        <p class="text-center text-[12px] text-white/60">Accidental tap? You can still cancel.</p>
       </div>
     {:else}
       <div class="flex flex-1 flex-col items-center justify-center" in:fade={{ duration: 180 }}>
@@ -804,7 +814,7 @@
         <h2 class="mt-8 text-center text-[22px] font-semibold tracking-[-0.02em]">
           {classifying ? 'AI listening to your audio' : 'Alerting nearby responders'}
         </h2>
-        <p class="mt-2 text-center text-[12.5px] text-white/70">
+        <p class="mt-2 text-center text-[13.5px] text-white/70">
           {#if classifying}
             Classifying the {total}s clip so the first alert already carries the audio level…
           {:else}
@@ -817,7 +827,7 @@
           {/each}
         </div>
       </div>
-      <div class="flex items-center justify-center gap-2 text-[10.5px] font-medium text-white/60">
+      <div class="flex items-center justify-center gap-2 text-[12px] font-medium text-white/60">
         <Loader2 size={12} class="animate-spin" /> Connecting to responder network & AI triage engine
       </div>
     {/if}
@@ -838,7 +848,7 @@
     >
       <div class="flex items-center justify-between">
         <span
-          class="inline-flex items-center gap-2 rounded-full bg-sos/15 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[#FF8A82] ring-1 ring-sos/25"
+          class="inline-flex items-center gap-2 rounded-full bg-sos/15 px-3 py-1.5 text-[12px] font-bold uppercase tracking-[0.14em] text-[#FF8A82] ring-1 ring-sos/25"
         >
           <span class="relative flex h-1.5 w-1.5">
             <span class="absolute h-full w-full animate-ping rounded-full bg-sos"></span>
@@ -847,14 +857,16 @@
           SOS active
         </span>
         <div class="text-right">
-          <p class="text-[9px] font-semibold uppercase tracking-[0.16em] text-white/40">Elapsed</p>
+          <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/55">Elapsed</p>
           <p class="text-[17px] font-semibold tabular-nums leading-tight">{elapsedLabel(elapsed)}</p>
         </div>
       </div>
 
       <div class="mt-5">
-        <h2 class="text-[25px] font-semibold leading-tight tracking-[-0.03em]">Help is on the way</h2>
-        <p class="mt-1.5 flex items-center gap-1.5 text-[11.5px] text-white/50">
+        <h2 class="text-[25px] font-semibold leading-tight tracking-[-0.03em]">
+          {respondedCount > 0 ? 'Help is on the way' : 'Alert sent'}
+        </h2>
+        <p class="mt-1.5 flex items-center gap-1.5 text-[13px] text-white/60">
           <MapPin size={12} class="text-sos" />
           {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} · Sharing live location
         </p>
@@ -862,14 +874,14 @@
 
       <!-- AI CLASSIFICATION: always visible, so the sender can read the type,
            the level and what the clip actually said (or why there is no text). -->
-      <div class="mt-4 overflow-hidden rounded-2xl bg-white/[0.06] ring-1 ring-white/[0.1]">
+      <div class="mt-4 shrink-0 overflow-hidden rounded-2xl bg-white/[0.06] ring-1 ring-white/[0.1]">
         <div class="flex items-center justify-between gap-2 bg-white/[0.05] px-3.5 py-2.5">
-          <span class="inline-flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.14em] text-white/50">
+          <span class="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-white/60">
             <Radio size={11} class="text-[#6EE7B7]" />
             AI triage · {triageSourceLabel}
           </span>
           <span
-            class="text-[9.5px] font-semibold {liveConnection === 'open'
+            class="text-[11px] font-semibold {liveConnection === 'open'
               ? 'text-[#6EE7B7]'
               : liveConnection === 'error'
                 ? 'text-[#FF8080]'
@@ -880,19 +892,19 @@
         <div class="p-3.5">
           <div class="flex items-center gap-2.5">
             <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/10">
-              <TypeIcon size={17} strokeWidth={2.2} class={triageResult ? (TRIAGE_COLORS[triageResult.emergency_type] || 'text-white') : 'text-white/50'} />
+              <TypeIcon size={17} strokeWidth={2.2} class={triageResult ? (TRIAGE_COLORS[triageResult.emergency_type] || 'text-white') : 'text-white/60'} />
             </span>
             <div class="min-w-0 flex-1">
               {#if triageResult}
-                <p class="text-[13px] font-semibold text-white">
+                <p class="text-[14px] font-semibold text-white">
                   {TRIAGE_LABELS[triageResult.emergency_type] || triageResult.emergency_type}
                 </p>
                 {#if triageResult.summary}
-                  <p class="mt-0.5 text-[10.5px] leading-snug text-white/55">{triageResult.summary}</p>
+                  <p class="mt-0.5 text-[12px] leading-snug text-white/55">{triageResult.summary}</p>
                 {/if}
               {:else}
-                <p class="text-[13px] font-semibold text-white/80">Classification unavailable</p>
-                <p class="mt-0.5 text-[10.5px] leading-snug text-white/50">
+                <p class="text-[14px] font-semibold text-white/80">Classification unavailable</p>
+                <p class="mt-0.5 text-[12px] leading-snug text-white/60">
                   No AI classification came back for this alert, so responders were alerted with the
                   default fan-out.
                 </p>
@@ -902,14 +914,17 @@
 
           {#if triageResult}
             <div class="mt-3">
-              <div class="flex items-center justify-between text-[9.5px] font-semibold uppercase tracking-[0.1em] text-white/45">
+              <div class="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.1em] text-white/55">
                 <span>Severity</span>
                 <span class="{sevColor(triageResult.severity)}">{sevLabel(triageResult.severity)}</span>
               </div>
               <div class="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div class="h-full rounded-full bg-gradient-to-r from-[#FFD580] to-[#FF8080] {sevBar(triageResult.severity)}"></div>
+                <div
+                  class="h-full rounded-full bg-gradient-to-r from-[#FFD580] to-[#FF8080]"
+                  style="width: {sevWidth(triageResult.severity)}"
+                ></div>
               </div>
-              <p class="mt-1.5 text-[9.5px] text-white/40">
+              <p class="mt-1.5 text-[11px] text-white/55">
                 {#if triageResult.severity >= 0.67}
                   High priority — dispatching to the widest responder radius (5 km).
                 {:else if triageResult.severity >= 0.34}
@@ -922,33 +937,33 @@
           {/if}
 
           <div class="mt-3 rounded-xl bg-white/[0.06] px-3 py-2.5">
-            <p class="text-[9px] font-semibold uppercase tracking-[0.12em] text-white/35">
+            <p class="text-[11px] font-semibold uppercase tracking-[0.12em] text-white/55">
               Audio transcript · {total} s clip
             </p>
             {#if transcript}
-              <p class="mt-1 text-[11.5px] italic leading-relaxed text-white/80">“{transcript}”</p>
+              <p class="mt-1 text-[13px] italic leading-relaxed text-white/80">“{transcript}”</p>
             {:else if transcriptionStatus && transcriptionStatus !== 'completed'}
-              <p class="mt-1 text-[10.5px] leading-snug text-white/45">
+              <p class="mt-1 text-[12px] leading-snug text-white/55">
                 {TRANSCRIPTION_NOTES[transcriptionStatus] || 'No transcript was returned.'}
               </p>
             {:else if mediaState === 'uploading' || classifying}
-              <p class="mt-1 flex items-center gap-1.5 text-[10.5px] text-white/45">
+              <p class="mt-1 flex items-center gap-1.5 text-[12px] text-white/55">
                 <Loader2 size={11} class="animate-spin" />
                 Reading the recorded audio…
               </p>
             {:else if captureState === 'blocked' || captureState === 'failed'}
-              <p class="mt-1 text-[10.5px] leading-snug text-white/45">
+              <p class="mt-1 text-[12px] leading-snug text-white/55">
                 No audio was recorded, so there is no transcript.
               </p>
             {:else}
-              <p class="mt-1 text-[10.5px] leading-snug text-white/45">
+              <p class="mt-1 text-[12px] leading-snug text-white/55">
                 No transcript was returned for this clip.
               </p>
             {/if}
           </div>
 
           {#if classifyError && !triageFromAudio}
-            <p class="mt-2 text-[9.5px] leading-snug text-white/40">
+            <p class="mt-2 text-[11px] leading-snug text-white/55">
               Pre-trigger audio classification unavailable ({classifyError}) — this level came from
               your description.
             </p>
@@ -972,31 +987,31 @@
       <div class="mt-3 flex items-center gap-2 rounded-2xl bg-white/[0.035] px-3.5 py-2.5 ring-1 ring-white/[0.06]">
         {#if mediaState === 'uploading' || (audioAttached && mediaState === 'idle')}
           <Loader2 size={13} class="animate-spin text-white/60" />
-          <p class="text-[10.5px] font-medium text-white/60">Sending your audio to responders…</p>
+          <p class="text-[12px] font-medium text-white/60">Sending your audio to responders…</p>
         {:else if mediaState === 'uploaded'}
           <Check size={13} class="text-[#6EE7B7]" />
-          <p class="text-[10.5px] font-medium text-[#8FF0C6]">
+          <p class="text-[12px] font-medium text-[#8FF0C6]">
             Audio received · responders can listen to your {total} s clip.
           </p>
         {:else if mediaState === 'error'}
           <AlertTriangle size={13} class="shrink-0 text-[#FF8080]" />
-          <p class="text-[10.5px] font-medium text-[#FF8080]">
+          <p class="text-[12px] font-medium text-[#FF8080]">
             {mediaError || 'The audio could not be sent.'}
           </p>
         {:else}
-          <Mic size={13} class="text-white/40" />
-          <p class="text-[10.5px] font-medium text-white/45">No audio was attached to this alert.</p>
+          <Mic size={13} class="text-white/55" />
+          <p class="text-[12px] font-medium text-white/55">No audio was attached to this alert.</p>
         {/if}
       </div>
 
       <div class="mt-4 flex items-center justify-between gap-2 px-0.5">
-        <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40">
+        <p class="text-[12px] font-semibold uppercase tracking-[0.14em] text-white/55">
           Responders notified · {notifiedTotal}
         </p>
         <span
-          class="flex shrink-0 items-center gap-1 text-[10px] font-medium {respondedCount > 0
+          class="flex shrink-0 items-center gap-1 text-[12px] font-medium {respondedCount > 0
             ? 'text-[#6EE7B7]'
-            : 'text-white/50'}"
+            : 'text-white/60'}"
         >
           <span
             class="h-1.5 w-1.5 rounded-full {respondedCount > 0
@@ -1014,20 +1029,20 @@
           {#each respondersList as person (person.user_id)}
             <div class="flex items-center gap-2.5 px-3.5 py-2.5">
               <span
-                class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20 text-[9.5px] font-bold text-[#8FF0C6]"
+                class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20 text-[11px] font-bold text-[#8FF0C6]"
               >
                 {initialsFor(person.name || 'Responder')}
               </span>
               <div class="min-w-0 flex-1">
-                <p class="truncate text-[11.5px] font-semibold text-white">
+                <p class="truncate text-[13px] font-semibold text-white">
                   {person.name || 'Responder'}
                 </p>
                 {#if responderMeta(person)}
-                  <p class="mt-0.5 truncate text-[10px] text-white/50">{responderMeta(person)}</p>
+                  <p class="mt-0.5 truncate text-[12px] text-white/60">{responderMeta(person)}</p>
                 {/if}
               </div>
               <span
-                class="shrink-0 rounded-full bg-[#0BA36F]/15 px-2 py-1 text-[9px] font-semibold text-[#8FF0C6]"
+                class="shrink-0 rounded-full bg-[#0BA36F]/15 px-2 py-1 text-[11px] font-semibold text-[#8FF0C6]"
                 >On the way</span
               >
             </div>
@@ -1039,10 +1054,10 @@
             <Navigation size={15} strokeWidth={2.4} class="text-[#6EE7B7]" />
           </span>
           <div class="min-w-0 flex-1">
-            <p class="text-[11.5px] font-semibold text-[#8FF0C6]">
+            <p class="text-[13px] font-semibold text-[#8FF0C6]">
               {respondedCount} {respondedCount === 1 ? 'responder is' : 'responders are'} on the way
             </p>
-            <p class="mt-0.5 text-[10px] leading-snug text-[#8FF0C6]/70">
+            <p class="mt-0.5 text-[12px] leading-snug text-[#8FF0C6]/70">
               Stay where you are if it's safe. Names and distances are not part of this alert's
               response.
             </p>
@@ -1051,21 +1066,26 @@
       {/if}
 
       {#if liveConnection === 'reconnecting'}
-        <p class="mt-2 text-[9.5px] font-medium text-[#FFD580]">
+        <p class="mt-2 text-[11px] font-medium text-[#FFD580]">
           Live connection lost — reconnecting…
         </p>
       {:else if liveConnection === 'error'}
-        <p class="mt-2 text-[9.5px] font-medium text-[#FF8080]">{live?.lastError || 'Live connection unavailable.'}</p>
+        <p class="mt-2 text-[11px] font-medium text-[#FF8080]">{live?.lastError || 'Live connection unavailable.'}</p>
       {/if}
 
       <div class="mt-2.5 rounded-2xl bg-white/[0.05] px-4 py-3 ring-1 ring-white/[0.06]">
-        <p class="text-[11px] leading-relaxed text-white/50">
-          Nearby responders were notified in a <span class="font-semibold text-white/80"
-            >{triageResult?.severity >= 0.67 ? '5 km' : triageResult?.severity >= 0.34 ? '2 km' : '1 km'}</span
-          > radius based on the AI severity score.
+        <p class="text-[12.5px] leading-relaxed text-white/60">
+          {#if triageResult?.severity != null && Number.isFinite(Number(triageResult.severity))}
+            Nearby responders were notified in a <span class="font-semibold text-white/80"
+              >{triageResult.severity >= 0.67 ? '5 km' : triageResult.severity >= 0.34 ? '2 km' : '1 km'}</span
+            > radius based on the AI severity score.
+          {:else}
+            This alert was not classified, so responders were notified in the
+            <span class="font-semibold text-white/80">default 1 km</span> radius.
+          {/if}
         </p>
         {#if escalated}
-          <p class="mt-1.5 flex items-start gap-1.5 text-[10.5px] font-medium text-[#6EE7B7]">
+          <p class="mt-1.5 flex items-start gap-1.5 text-[12px] font-medium text-[#6EE7B7]">
             <Radio size={11} class="mt-px shrink-0" />
             <span
               >The audio raised the priority, so {recipientsAdded} more
@@ -1076,31 +1096,24 @@
         {/if}
       </div>
 
-      <div class="mt-4 grid grid-cols-2 gap-2.5">
-        <button
-          type="button"
-          class="flex items-center justify-center gap-2 rounded-full bg-white py-3 text-[12.5px] font-semibold text-ink transition active:scale-[0.98]"
-        >
-          <Phone size={15} strokeWidth={2.4} />
-          Call 112
-        </button>
-        <button
-          type="button"
-          class="flex items-center justify-center gap-2 rounded-full bg-white/10 py-3 text-[12.5px] font-semibold text-white ring-1 ring-white/10 transition hover:bg-white/15 active:scale-[0.98]"
-        >
-          <MessageCircle size={15} strokeWidth={2.2} />
-          Message
-        </button>
-      </div>
+      <!-- A real tel: link: the old button had no handler, so the one control a
+           person reaches for in an emergency did nothing. -->
+      <a
+        href="tel:112"
+        class="mt-4 flex min-h-[44px] items-center justify-center gap-2 rounded-full bg-white py-3 text-[13.5px] font-semibold text-ink transition hover:bg-white/90 active:scale-[0.98]"
+      >
+        <Phone size={15} strokeWidth={2.4} />
+        Call 112 — emergency services
+      </a>
 
       <div class="mt-4 rounded-2xl bg-white/[0.035] p-3.5 ring-1 ring-white/[0.06]">
-        <p class="text-[9px] font-semibold uppercase tracking-[0.14em] text-white/35">While you wait</p>
+        <p class="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">While you wait</p>
         <ul class="mt-2 space-y-1.5">
-          <li class="flex items-start gap-2 text-[10.5px] leading-snug text-white/55">
+          <li class="flex items-start gap-2 text-[12px] leading-snug text-white/55">
             <Check size={12} class="mt-px shrink-0 text-[#6EE7B7]" strokeWidth={2.6} />
             Stay where you are if it's safe and visible.
           </li>
-          <li class="flex items-start gap-2 text-[10.5px] leading-snug text-white/55">
+          <li class="flex items-start gap-2 text-[12px] leading-snug text-white/55">
             <Check size={12} class="mt-px shrink-0 text-[#6EE7B7]" strokeWidth={2.6} />
             Keep your phone unlocked, sound on.
           </li>
@@ -1111,14 +1124,14 @@
         <button
           type="button"
           onclick={endAlert}
-          class="flex w-full items-center justify-center gap-2 rounded-full py-3.5 text-[12.5px] font-semibold ring-1 transition {confirming
+          class="flex w-full items-center justify-center gap-2 rounded-full py-3.5 text-[13.5px] font-semibold ring-1 transition {confirming
             ? 'bg-sos text-white ring-sos'
             : 'bg-white/[0.04] text-white/80 ring-white/10 hover:bg-white/[0.08]'}"
         >
           <ShieldCheck size={15} />
           {confirming ? 'Tap again to end alert' : "I'm safe — end alert"}
         </button>
-        <p class="mt-2.5 text-center text-[9.5px] text-white/35">
+        <p class="mt-2.5 text-center text-[11px] text-white/55">
           Ending the alert stops live location sharing.
         </p>
       </div>
@@ -1138,13 +1151,13 @@
         <h2 class="mt-6 text-[24px] font-semibold tracking-[-0.03em]">
           {rateLimited ? 'SOS limit reached' : 'SOS could not be sent'}
         </h2>
-        <p class="mt-2 max-w-[270px] text-[12.5px] leading-relaxed text-white/55">
+        <p class="mt-2 max-w-[270px] text-[13.5px] leading-relaxed text-white/55">
           {errorMsg ||
             (rateLimited
               ? 'SOS limit reached. Try again later.'
               : 'The alert did not go through. Please try again.')}
         </p>
-        <p class="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[10.5px] text-white/50 ring-1 ring-white/10">
+        <p class="mt-4 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[12px] text-white/60 ring-1 ring-white/10">
           <Phone size={11} /> In immediate danger, call 112.
         </p>
       </div>
@@ -1153,7 +1166,7 @@
           <button
             type="button"
             onclick={() => { phase = 'describe'; errorMsg = '' }}
-            class="w-full rounded-full bg-white py-3.5 text-[13.5px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]"
+            class="w-full rounded-full bg-white py-3.5 text-[14px] font-semibold text-[#C41912] shadow-lg transition active:scale-[0.98]"
           >
             Try again
           </button>
@@ -1161,7 +1174,7 @@
         <button
           type="button"
           onclick={stop}
-          class="w-full rounded-full py-3 text-[12.5px] font-semibold transition {rateLimited
+          class="w-full rounded-full py-3 text-[13.5px] font-semibold transition {rateLimited
             ? 'bg-white text-ink hover:bg-white/90'
             : 'bg-white/[0.06] text-white/80 ring-1 ring-white/10 hover:bg-white/[0.1]'}"
         >
@@ -1186,22 +1199,23 @@
         </div>
 
         <h2 class="mt-7 text-[26px] font-semibold tracking-[-0.03em]">You're marked safe</h2>
-        <p class="mt-2 max-w-[260px] text-[12.5px] leading-relaxed text-white/55">
-          Your alert has ended and live location sharing stopped. Your contacts have been notified.
+        <p class="mt-2 max-w-[260px] text-[13.5px] leading-relaxed text-white/55">
+          Your alert has ended and live location sharing stopped. Responders on this alert see that it
+          is resolved.
         </p>
 
         <div class="mt-6 flex w-full max-w-[280px] divide-x divide-white/10 rounded-2xl bg-white/[0.05] py-3.5 ring-1 ring-white/10">
           <div class="flex-1 text-center">
             <p class="text-[15px] font-semibold">{elapsedLabel(Math.max(elapsed, 1))}</p>
-            <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Duration</p>
+            <p class="mt-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-white/55">Duration</p>
           </div>
           <div class="flex-1 text-center">
-            <p class="text-[15px] font-semibold">{acknowledged ? 1 : 0}</p>
-            <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Responded</p>
+            <p class="text-[15px] font-semibold">{respondedCount}</p>
+            <p class="mt-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-white/55">Responded</p>
           </div>
           <div class="flex-1 text-center">
             <p class="text-[15px] font-semibold">{notifiedTotal}</p>
-            <p class="mt-0.5 text-[9px] font-medium uppercase tracking-[0.12em] text-white/40">Notified</p>
+            <p class="mt-0.5 text-[11px] font-medium uppercase tracking-[0.12em] text-white/55">Notified</p>
           </div>
         </div>
       </div>
@@ -1209,11 +1223,10 @@
       <button
         type="button"
         onclick={backHome}
-        class="w-full rounded-full bg-white py-3.5 text-[13px] font-semibold text-ink transition active:scale-[0.98]"
+        class="w-full rounded-full bg-white py-3.5 text-[14px] font-semibold text-ink transition active:scale-[0.98]"
       >
         Back to home
       </button>
-      <p class="mt-2.5 text-center text-[10px] text-white/35">A summary was saved to your alert history.</p>
     </div>
   {/if}
 </div>

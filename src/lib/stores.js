@@ -11,6 +11,29 @@ export const session = writable({
 // Last AI triage result from a triggered SOS (shown in the alert flow).
 export const lastTriage = writable(null)
 
+// Profile → "Live location". Off means the app stops publishing the heartbeat,
+// so the account really leaves nearby responder lists; a switch that only
+// changed its own state would be a lie about a privacy control.
+const SHARING_KEY = 'sos_alert_location_sharing'
+
+function initialLocationSharing() {
+  try {
+    return localStorage.getItem(SHARING_KEY) !== 'off'
+  } catch {
+    return true
+  }
+}
+
+export const locationSharing = writable(initialLocationSharing())
+
+locationSharing.subscribe((on) => {
+  try {
+    localStorage.setItem(SHARING_KEY, on ? 'on' : 'off')
+  } catch {
+    /* private mode: the toggle still works for this session */
+  }
+})
+
 // Reverse-geocoded "you are here" label for the current heartbeat, resolved by
 // HomeView (src/lib/place.js) and reused by the Profile screen.
 export const place = writable('')

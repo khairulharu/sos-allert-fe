@@ -46,6 +46,10 @@
       `Live · ${radiusM >= 1000 ? `${radiusM / 1000} km` : `${radiusM} m`} radius`,
   )
 
+  // The footer is only interactive when the parent supplies a handler; with no
+  // onopen it renders as a plain panel instead of a button that does nothing.
+  const openable = $derived(typeof onopen === 'function')
+
   const closest = $derived(
     responders.reduce(
       (min, person) =>
@@ -260,7 +264,7 @@
   {#if showControls}
   <div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
     <span
-      class="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[11px] font-semibold text-ink shadow-sm ring-1 ring-black/5 backdrop-blur-md"
+      class="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[12.5px] font-semibold text-ink shadow-sm ring-1 ring-black/5 backdrop-blur-md"
     >
       <span class="relative flex h-1.5 w-1.5">
         <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-sos opacity-70"></span>
@@ -293,41 +297,48 @@
   {/if}
 
   {#if showFooter}
-    <button
-      type="button"
-      onclick={onopen}
-      class="absolute inset-x-2.5 bottom-2.5 flex items-center gap-3 rounded-[18px] bg-white/92 p-3 text-left shadow-[0_8px_24px_-12px_rgba(16,24,40,0.35)] ring-1 ring-black/5 backdrop-blur-xl transition active:scale-[0.99]"
+    <!-- This element is a <button> exactly when a click handler is attached. -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <svelte:element
+      this={openable ? 'button' : 'div'}
+      type={openable ? 'button' : undefined}
+      onclick={openable ? () => onopen?.() : undefined}
+      class="absolute inset-x-2.5 bottom-2.5 flex items-center gap-3 rounded-[18px] bg-white/92 p-3 text-left shadow-[0_8px_24px_-12px_rgba(16,24,40,0.35)] ring-1 ring-black/5 backdrop-blur-xl {openable
+        ? 'transition active:scale-[0.99]'
+        : ''}"
     >
       <div class="flex -space-x-2">
         {#each responders.slice(0, 4) as person, i}
           <span
-            class="grid h-7 w-7 place-items-center rounded-full text-[9px] font-bold text-white ring-2 ring-white"
+            class="grid h-7 w-7 place-items-center rounded-full text-[11px] font-bold text-white ring-2 ring-white"
             style="background:{PIN_COLORS[i % PIN_COLORS.length]}"
             >•</span
           >
         {/each}
         {#if responders.length === 0}
           <span
-            class="grid h-7 w-7 place-items-center rounded-full bg-[#E3E6EA] text-[9px] font-bold text-muted ring-2 ring-white"
+            class="grid h-7 w-7 place-items-center rounded-full bg-[#E3E6EA] text-[11px] font-bold text-muted ring-2 ring-white"
             >—</span
           >
         {/if}
       </div>
       <div class="min-w-0 flex-1">
         {#if responders.length > 0}
-          <p class="text-[12.5px] font-semibold leading-tight text-ink">
+          <p class="text-[13.5px] font-semibold leading-tight text-ink">
             {responders.length} responder{responders.length === 1 ? '' : 's'} nearby
           </p>
-          <p class="text-[11px] leading-tight text-muted">
+          <p class="text-[12.5px] leading-tight text-muted">
             Closest is {distanceLabel(closest)} away · positions approximate
           </p>
         {:else}
-          <p class="text-[12.5px] font-semibold leading-tight text-ink">No responders nearby</p>
-          <p class="text-[11px] leading-tight text-muted">Coverage updates in real time</p>
+          <p class="text-[13.5px] font-semibold leading-tight text-ink">No responders nearby</p>
+          <p class="text-[12.5px] leading-tight text-muted">Coverage updates in real time</p>
         {/if}
       </div>
-      <ChevronRight size={17} class="text-muted" />
-    </button>
+      {#if openable}
+        <ChevronRight size={17} class="text-muted" />
+      {/if}
+    </svelte:element>
   {/if}
 </div>
 
@@ -370,12 +381,25 @@
     font: inherit;
   }
 
+  :global(.map-shell .leaflet-bottom.leaflet-right),
+  :global(.map-shell .leaflet-bottom.leaflet-left) {
+    max-width: 100%;
+  }
+
   :global(.map-shell .leaflet-control-attribution) {
-    font-size: 9px;
-    line-height: 1.4;
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: normal;
+    max-width: 100%;
+    margin: 0 10px 6px 0;
     padding: 0 4px;
-    background: rgba(255, 255, 255, 0.8);
-    color: #7b818c;
+    background: rgba(255, 255, 255, 0.85);
+    color: #5b6270;
+  }
+
+  :global(.map-shell .leaflet-control-attribution a) {
+    font-size: 11px;
+    white-space: normal;
   }
 
   :global(.map-shell.with-footer .leaflet-bottom.leaflet-right) {

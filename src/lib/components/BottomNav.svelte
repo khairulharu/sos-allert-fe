@@ -32,7 +32,7 @@
           type="button"
           onclick={() => onnavigate?.(item.id)}
           aria-current={active === item.id ? 'page' : undefined}
-          class="flex w-[58px] flex-col items-center gap-1 rounded-2xl py-1.5 transition {active ===
+          class="flex min-h-[44px] w-[58px] flex-col items-center justify-center gap-1 rounded-2xl py-1.5 transition {active ===
           item.id
             ? 'text-ink'
             : 'text-muted hover:text-ink'}"
@@ -44,7 +44,7 @@
           >
             <Icon size={17} strokeWidth={active === item.id ? 2.4 : 2} />
           </span>
-          <span class="text-[9.5px] font-semibold tracking-tight">{item.label}</span>
+          <span class="text-[12px] font-semibold tracking-tight">{item.label}</span>
         </button>
       {/each}
 
@@ -57,7 +57,7 @@
           type="button"
           onclick={() => onnavigate?.(item.id)}
           aria-current={active === item.id ? 'page' : undefined}
-          class="flex w-[58px] flex-col items-center gap-1 rounded-2xl py-1.5 transition {active ===
+          class="flex min-h-[44px] w-[58px] flex-col items-center justify-center gap-1 rounded-2xl py-1.5 transition {active ===
           item.id
             ? 'text-ink'
             : 'text-muted hover:text-ink'}"
@@ -69,7 +69,7 @@
           >
             <Icon size={17} strokeWidth={active === item.id ? 2.4 : 2} />
           </span>
-          <span class="text-[9.5px] font-semibold tracking-tight">{item.label}</span>
+          <span class="text-[12px] font-semibold tracking-tight">{item.label}</span>
         </button>
       {/each}
     </nav>

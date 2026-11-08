@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte'
+  import { get } from 'svelte/store'
   import { fly } from 'svelte/transition'
   import BottomNav from '$lib/components/BottomNav.svelte'
   import HomeView from '$lib/components/HomeView.svelte'
@@ -9,7 +10,7 @@
   import AlertFlow from '$lib/components/AlertFlow.svelte'
   import AlertIncoming from '$lib/components/AlertIncoming.svelte'
   import AuthScreen from '$lib/components/AuthScreen.svelte'
-  import { session, restoreSession, logout } from '$lib/stores.js'
+  import { session, restoreSession, logout, locationSharing } from '$lib/stores.js'
   import { location as locationApi, sos as sosApi, getSessionToken } from '$lib/api.js'
   import {
     tracking,
@@ -364,31 +365,50 @@
     }
   }
 
+  // A dialog owns the screen: everything behind it is made inert so the only
+  // reachable controls are the dialog's own.
+  const modalOpen = $derived(sosOpen || (incomingOpen && !!pendingAlert))
+
   // ---- geolocation + heartbeat ----
   let heartbeatTimer
   let lastCoord = $state({ lat: -8.65, lng: 115.22 })
 
+  // One shared browser fix (src/lib/geo.js) feeds both the heartbeat and the
+  // nearby map, so the two writers can never publish different buckets, and the
+  // GPS is asked at most once per tick instead of on every view mount.
+  async function publishHeartbeat() {
+    const pos = await browserPosition()
+    if (pos) lastCoord = pos
+    // Profile → "Live location". With sharing off nothing is published, so the
+    // account drops out of nearby lists as soon as last_seen goes stale.
+    if (!get(locationSharing)) return
+    try {
+      await locationApi.update(lastCoord.lat, lastCoord.lng)
+    } catch {
+      /* heartbeat failures are safe to ignore */
+    }
+  }
+
+  let sharingUnsub = null
+  let sharingWasOn = false
+
   function startLocationHeartbeat() {
     if (heartbeatTimer) return
-    // One shared browser fix (src/lib/geo.js) feeds both the heartbeat and the
-    // nearby map, so the two writers can never publish different buckets, and
-    // the GPS is asked at most once per tick instead of on every view mount.
-    const send = async () => {
-      const pos = await browserPosition()
-      if (pos) lastCoord = pos
-      try {
-        await locationApi.update(lastCoord.lat, lastCoord.lng)
-      } catch {
-        /* heartbeat failures are safe to ignore */
-      }
-    }
-    send()
-    heartbeatTimer = setInterval(send, 60000)
+    publishHeartbeat()
+    heartbeatTimer = setInterval(publishHeartbeat, 60000)
+    // Turning sharing back on publishes at once instead of waiting a tick.
+    sharingWasOn = get(locationSharing)
+    sharingUnsub = locationSharing.subscribe((on) => {
+      if (on && !sharingWasOn) publishHeartbeat()
+      sharingWasOn = on
+    })
   }
 
   function stopLocationHeartbeat() {
     clearInterval(heartbeatTimer)
     heartbeatTimer = null
+    sharingUnsub?.()
+    sharingUnsub = null
   }
 
   // Microphone access is requested in the same breath as the location one, so
@@ -480,7 +500,11 @@
     <div
       class="relative z-10 flex h-dvh w-full max-w-[430px] flex-col overflow-hidden bg-canvas sm:h-[min(884px,calc(100dvh_-_32px))] sm:rounded-[44px] sm:ring-1 sm:ring-black/10 sm:shadow-[0_50px_120px_-40px_rgba(13,15,19,0.55)]"
     >
-      <main bind:this={scrollEl} class="relative min-h-0 flex-1 overflow-y-auto pb-36 no-scrollbar">
+      <main
+        bind:this={scrollEl}
+        inert={modalOpen}
+        class="relative min-h-0 flex-1 overflow-y-auto pb-36 no-scrollbar"
+      >
         <!-- Home stays mounted (hidden, not destroyed) so returning to it does
              not rebuild the Leaflet map or restart the location flow. -->
         <div class:hidden={tab !== 'home'}>
@@ -516,20 +540,25 @@
         class="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-32 bg-gradient-to-t from-canvas via-canvas/85 to-transparent"
       ></div>
 
-      <BottomNav active={tab} onnavigate={navigate} onsos={() => (sosOpen = true)} />
+      <div inert={modalOpen}>
+        <BottomNav active={tab} onnavigate={navigate} onsos={() => (sosOpen = true)} />
+      </div>
 
-      {#if toast}
-        <div
-          class="pointer-events-none absolute bottom-[112px] left-1/2 z-40 w-max max-w-[320px] -translate-x-1/2"
-          in:fly={{ y: 12, duration: 220 }}
-        >
+      <!-- The live region exists before any message so a screen reader announces
+           the status instead of dropping a node that appeared with text in it. -->
+      <div
+        role="status"
+        aria-live="polite"
+        class="pointer-events-none absolute bottom-[112px] left-1/2 z-40 w-max max-w-[320px] -translate-x-1/2"
+      >
+        {#if toast}
           <p
-            class="rounded-full bg-ink/92 px-4 py-2.5 text-center text-[11px] font-medium text-white shadow-xl ring-1 ring-white/10 backdrop-blur"
+            class="animate-rise rounded-full bg-ink/92 px-4 py-2.5 text-center text-[13px] font-medium text-white shadow-xl ring-1 ring-white/10 backdrop-blur"
           >
             {toast}
           </p>
-        </div>
-      {/if}
+        {/if}
+      </div>
 
       {#if incomingOpen && pendingAlert}
         <AlertIncoming

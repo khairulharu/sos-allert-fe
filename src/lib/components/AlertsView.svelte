@@ -1,8 +1,9 @@
 <script>
   import { onMount } from 'svelte'
-  import { ArrowUpRight, Radio, BadgeCheck, Info, SlidersHorizontal, Loader } from '@lucide/svelte'
+  import { ArrowUpRight, Radio, BadgeCheck, Info, Loader } from '@lucide/svelte'
   import { sos } from '$lib/api.js'
   import { session } from '$lib/stores.js'
+  import { emergencyLabel, severityWord } from '$lib/alertMeta.js'
 
   let tab = $state('all')
   let loading = $state(true)
@@ -44,7 +45,9 @@
   const sentCount = $derived(alerts.filter((a) => a.type === 'sent').length)
   const helpedCount = $derived(alerts.filter((a) => a.statusKey === 'RESOLVED').length)
 
-  onMount(async () => {
+  async function load() {
+    loading = true
+    error = ''
     try {
       const [active, inbox] = await Promise.all([
         sos.active().catch(() => []),
@@ -59,7 +62,9 @@
     } finally {
       loading = false
     }
-  })
+  }
+
+  onMount(load)
 
   function placeLabel(point) {
     if (!point) return '—'
@@ -79,13 +84,13 @@
     const dateLabel = t
       ? t.toDateString() === today.toDateString()
         ? 'Today'
-        : t.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+        : t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
       : 'Earlier'
     const time = t
-      ? t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      ? t.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
       : '—'
-    const severity = a.severity != null ? `${Math.round(Number(a.severity) * 100)}%` : '—'
-    const emergency = a.emergency_type ? a.emergency_type.replace(/_/g, ' ') : 'SOS'
+    const emergency = emergencyLabel(a.emergency_type)
+    const severity = severityWord(a.severity)
     return {
       ...a,
       type,
@@ -98,24 +103,17 @@
       responders: Number(a.responders_en_route) || 0,
       statusKey: a.status,
       status: statusLabel[a.status] || a.status,
-      meta: `${emergency} · severity ${severity}`,
+      meta: severity ? `${emergency} · ${severity}` : emergency,
     }
   }
 </script>
 
 <div class="px-5 pb-4 pt-7">
-  <header class="flex items-start justify-between">
+  <header>
     <div>
-      <p class="text-[12px] font-medium text-muted">Safety timeline</p>
+      <p class="text-[13px] font-medium text-muted">Safety timeline</p>
       <h1 class="mt-1 text-[26px] font-semibold tracking-[-0.035em]">Alerts</h1>
     </div>
-    <button
-      type="button"
-      aria-label="Filter alerts"
-      class="grid h-9 w-9 place-items-center rounded-full bg-white text-ink/60 ring-1 ring-black/5 transition hover:text-ink active:scale-95"
-    >
-      <SlidersHorizontal size={16} />
-    </button>
   </header>
 
   <!-- summary -->
@@ -123,17 +121,17 @@
     <div class="card rounded-[20px] p-3.5">
       <p class="eyebrow">All time</p>
       <p class="mt-1.5 text-[21px] font-semibold tracking-tight">{sentCount}</p>
-      <p class="text-[10px] text-muted">alerts sent</p>
+      <p class="text-[12px] text-muted">alerts sent</p>
     </div>
     <div class="card rounded-[20px] p-3.5">
       <p class="eyebrow">Helped</p>
       <p class="mt-1.5 text-[21px] font-semibold tracking-tight text-safe">{helpedCount}</p>
-      <p class="text-[10px] text-muted">resolved alerts</p>
+      <p class="text-[12px] text-muted">resolved alerts</p>
     </div>
     <div class="card rounded-[20px] p-3.5">
       <p class="eyebrow">Active</p>
       <p class="mt-1.5 text-[21px] font-semibold tracking-tight">{alerts.filter((a) => a.type === 'received' && a.statusKey === 'TRIGGERED').length}</p>
-      <p class="text-[10px] text-muted">nearby alerts</p>
+      <p class="text-[12px] text-muted">nearby alerts</p>
     </div>
   </section>
 
@@ -144,7 +142,7 @@
         type="button"
         onclick={() => (tab = item.id)}
         aria-pressed={tab === item.id}
-        class="flex-1 rounded-full py-2 text-[11.5px] font-semibold transition {tab === item.id
+        class="flex-1 rounded-full py-2 text-[13px] font-semibold transition {tab === item.id
           ? 'bg-white text-ink shadow-sm'
           : 'text-muted hover:text-ink'}"
       >
@@ -154,34 +152,38 @@
   </div>
 
   {#if loading}
-    <div class="card mt-5 flex items-center justify-center gap-2.5 px-4 py-10 text-[12.5px] font-medium text-muted">
+    <div class="card mt-5 flex items-center justify-center gap-2.5 px-4 py-10 text-[13.5px] font-medium text-muted">
       <Loader size={15} class="animate-spin" />
       Loading alerts…
     </div>
   {:else if error}
-    <div class="card mt-5 px-4 py-10 text-center">
-      <p class="text-[12.5px] font-semibold text-ink">Couldn't load alerts</p>
-      <p class="mt-1 text-[11px] text-muted">{error}</p>
+    <div class="card mt-5 px-4 py-10 text-center" role="alert">
+      <p class="text-[13.5px] font-semibold text-ink">Couldn't load alerts</p>
+      <p class="mt-1 text-[12.5px] text-muted">{error}</p>
+      <button
+        type="button"
+        onclick={load}
+        class="mt-3 rounded-full bg-white px-4 py-2 text-[13px] font-semibold text-ink ring-1 ring-black/5 transition hover:bg-[#FAFBFC] active:scale-[0.98]"
+      >
+        Retry
+      </button>
     </div>
   {:else if Object.keys(groups).length === 0}
     <div class="card mt-5 px-4 py-10 text-center">
-      <p class="text-[12.5px] font-semibold text-ink">No alerts yet</p>
-      <p class="mt-1 text-[11px] text-muted">SOS alerts will show up here.</p>
+      <p class="text-[13.5px] font-semibold text-ink">No alerts yet</p>
+      <p class="mt-1 text-[12.5px] text-muted">SOS alerts will show up here.</p>
     </div>
   {:else}
     {#each Object.entries(groups) as [label, items]}
       <section class="mt-6">
         <div class="flex items-center justify-between px-0.5">
-          <h2 class="eyebrow text-ink/50">{label}</h2>
-          <span class="text-[10px] font-medium text-muted">{items.length} alert{items.length > 1 ? 's' : ''}</span>
+          <h2 class="eyebrow text-ink/60">{label}</h2>
+          <span class="text-[12px] font-medium text-muted">{items.length} alert{items.length > 1 ? 's' : ''}</span>
         </div>
 
         <div class="card mt-2.5 divide-y divide-line/80 overflow-hidden">
           {#each items as item}
-            <button
-              type="button"
-              class="flex w-full items-start gap-3 px-4 py-4 text-left transition hover:bg-[#FAFBFC]"
-            >
+            <div class="flex items-start gap-3 px-4 py-4">
               <span
                 class="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-2xl {item.type === 'sent'
                   ? 'bg-[#FFECEB] text-sos'
@@ -196,24 +198,24 @@
 
               <span class="min-w-0 flex-1">
                 <span class="flex items-center gap-1.5">
-                  <span class="truncate text-[13px] font-semibold text-ink">{item.summary}</span>
+                  <span class="truncate text-[14px] font-semibold text-ink">{item.summary}</span>
                   {#if item.responders > 0}
-                    <span class="inline-flex shrink-0 items-center gap-0.5 text-[9.5px] font-medium text-muted">
+                    <span class="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-muted">
                       <BadgeCheck size={11} class="text-[#2F6BFF]" /> {item.responders}
                     </span>
                   {/if}
                 </span>
-                <span class="mt-1 block truncate text-[11px] text-muted">
+                <span class="mt-1 block truncate text-[12.5px] text-muted">
                   {item.sender?.name ? `${item.sender.name} · ` : ''}{item.meta}
                 </span>
                 <span class="mt-2 flex items-center gap-2">
-                  <span class="rounded-full px-2 py-0.5 text-[9.5px] font-semibold {statusTone[item.statusKey]}"
+                  <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold {statusTone[item.statusKey]}"
                     >{item.status}</span
                   >
-                  <span class="text-[10px] text-muted">{item.time} · {item.place}</span>
+                  <span class="text-[12px] text-muted">{item.time} · {item.place}</span>
                 </span>
               </span>
-            </button>
+            </div>
           {/each}
         </div>
       </section>
@@ -222,8 +224,9 @@
 
   <div class="mt-6 flex items-start gap-2.5 rounded-[18px] bg-white/60 p-3.5 ring-1 ring-black/[0.03]">
     <Info size={14} class="mt-0.5 shrink-0 text-muted" />
-    <p class="text-[10.5px] leading-relaxed text-muted">
-      History is kept for 90 days. Live locations are never stored after an alert ends.
+    <p class="text-[12px] leading-relaxed text-muted">
+      Alerts you trigger or respond to appear here. Other people's locations are approximate until
+      you respond.
     </p>
   </div>
 </div>

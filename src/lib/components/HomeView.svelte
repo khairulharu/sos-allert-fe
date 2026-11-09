@@ -2,7 +2,7 @@
   import { X, Siren, Crosshair, Layers, MapPin, Bell } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
   import { place } from '$lib/stores.js'
-  import { own, responders, nearbyLoading, nearbyRadius } from '$lib/geo.js'
+  import { own, liveFix, responders, nearbyLoading, nearbyRadius } from '$lib/geo.js'
   import { emergencyLabel, distanceMeters, formatDistance } from '$lib/alertMeta.js'
 
   let {
@@ -12,7 +12,7 @@
     incoming = null,
     ondismissincoming,
     live = null,
-    coords = { lat: -8.65, lng: 115.22 },
+    coords = null,
   } = $props()
 
   // The Home view stays mounted for the whole session, so the date and the
@@ -109,7 +109,7 @@
     showFooter={false}
     showAttribution={false}
     responders={$responders}
-    own={$own}
+    own={$liveFix ?? $own}
     live={live}
     radiusM={$nearbyRadius}
     radiusVisible={radiusOn}

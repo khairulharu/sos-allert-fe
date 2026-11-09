@@ -20,9 +20,17 @@
     startResponderTracking,
     stopResponderTracking,
   } from '$lib/tracking.js'
-  import { formatDistance, formatEta } from '$lib/alertMeta.js'
+  import { formatDistance, formatEta, distanceMeters } from '$lib/alertMeta.js'
   import { micPermissionState, requestMicAccess } from '$lib/mic.js'
-  import { browserPosition, startNearbyPolling, stopNearbyPolling } from '$lib/geo.js'
+  import {
+    browserPosition,
+    liveFix,
+    own,
+    startPositionWatch,
+    stopPositionWatch,
+    startNearbyPolling,
+    stopNearbyPolling,
+  } from '$lib/geo.js'
   import { syncPushSubscription, disablePush } from '$lib/push.js'
 
   let tab = $state('home')
@@ -303,13 +311,12 @@
   async function responseCoords() {
     const pos = await browserPosition()
     if (pos) return pos
-    try {
-      const stored = await locationApi.get()
-      if (stored) return { lat: stored.latitude, lng: stored.longitude }
-    } catch {
-      /* fall through to the heartbeat fallback */
-    }
-    return { lat: lastCoord.lat, lng: lastCoord.lng }
+    // The backend's stored heartbeat is its own copy of the last real fix; it
+    // beats inventing a city when geolocation is denied.
+    const stored = get(own)
+    const lat = Number(stored?.latitude)
+    const lng = Number(stored?.longitude)
+    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null
   }
 
   async function respondToAlert() {
@@ -325,6 +332,10 @@
     respondError = ''
     try {
       const pos = await responseCoords()
+      if (!pos) {
+        respondError = 'Turn on location to respond — responders need your position.'
+        return
+      }
       const result = await sosApi.respond(alert.alert_id, pos.lat, pos.lng)
 
       dismissedAlerts.add(alert.alert_id)
@@ -371,19 +382,36 @@
 
   // ---- geolocation + heartbeat ----
   let heartbeatTimer
-  let lastCoord = $state({ lat: -8.65, lng: 115.22 })
+  let fixUnsub = null
+  let lastPublished = null
+  let lastPublishedAt = 0
 
-  // One shared browser fix (src/lib/geo.js) feeds both the heartbeat and the
-  // nearby map, so the two writers can never publish different buckets, and the
-  // GPS is asked at most once per tick instead of on every view mount.
+  // Current position: the live watch first, the stored heartbeat as a starting
+  // value. Null when neither exists — no made-up city is published or sent
+  // with an SOS.
+  const coords = $derived.by(() => {
+    if ($liveFix) {
+      return { lat: $liveFix.latitude, lng: $liveFix.longitude, accuracy: $liveFix.accuracy }
+    }
+    const lat = Number($own?.latitude)
+    const lng = Number($own?.longitude)
+    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null
+  })
+
+  // One shared browser fix (src/lib/geo.js) feeds the heartbeat, the map, and
+  // the SOS trigger, so the writers can never publish different buckets.
   async function publishHeartbeat() {
-    const pos = await browserPosition()
-    if (pos) lastCoord = pos
     // Profile → "Live location". With sharing off nothing is published, so the
     // account drops out of nearby lists as soon as last_seen goes stale.
     if (!get(locationSharing)) return
+    const pos = await browserPosition()
+    // No fresh fix: keep the previous heartbeat instead of republishing an old
+    // coordinate as current. The backend then ages it out on its own.
+    if (!pos) return
     try {
-      await locationApi.update(lastCoord.lat, lastCoord.lng)
+      await locationApi.update(pos.lat, pos.lng)
+      lastPublished = pos
+      lastPublishedAt = Date.now()
     } catch {
       /* heartbeat failures are safe to ignore */
     }
@@ -392,10 +420,32 @@
   let sharingUnsub = null
   let sharingWasOn = false
 
+  function onVisibility() {
+    if (!document.hidden) publishHeartbeat()
+  }
+
   function startLocationHeartbeat() {
     if (heartbeatTimer) return
+    startPositionWatch()
     publishHeartbeat()
+    // Keepalive well inside the backend's 2-minute stale window.
     heartbeatTimer = setInterval(publishHeartbeat, 60000)
+
+    // Movement is the real signal: publish when the fix moved ~25 m, at most
+    // every 10 s, so the nearby list and the place label follow a walking user
+    // instead of trailing a minute behind.
+    fixUnsub = liveFix.subscribe((f) => {
+      if (!f || !get(locationSharing)) return
+      const moved = distanceMeters(f, lastPublished)
+      if (moved != null && moved < 25) return
+      if (Date.now() - lastPublishedAt < 10000) return
+      publishHeartbeat()
+    })
+
+    // Coming back from a hidden tab re-acquires at once: the browser may have
+    // suspended the watch (and its timers) while it was in the background.
+    document.addEventListener('visibilitychange', onVisibility)
+
     // Turning sharing back on publishes at once instead of waiting a tick.
     sharingWasOn = get(locationSharing)
     sharingUnsub = locationSharing.subscribe((on) => {
@@ -407,8 +457,13 @@
   function stopLocationHeartbeat() {
     clearInterval(heartbeatTimer)
     heartbeatTimer = null
+    fixUnsub?.()
+    fixUnsub = null
+    document.removeEventListener('visibilitychange', onVisibility)
     sharingUnsub?.()
     sharingUnsub = null
+    stopPositionWatch()
+    lastPublished = null
   }
 
   // Microphone access is requested in the same breath as the location one, so
@@ -517,7 +572,7 @@
             incoming={pendingAlert}
             onviewalert={() => (incomingOpen = true)}
             ondismissincoming={dismissIncoming}
-            coords={lastCoord}
+            coords={coords}
             live={mapLive}
           />
         </div>
@@ -564,7 +619,7 @@
       {#if incomingOpen && pendingAlert}
         <AlertIncoming
           alert={pendingAlert}
-          own={lastCoord}
+          own={coords}
           live={responderTrack}
           responded={respondedAlert}
           youId={currentUser?.id}
@@ -581,7 +636,7 @@
           onnotify={notify}
           ontrack={handleTrack}
           live={liveTrack}
-          coords={lastCoord}
+          coords={coords}
         />
       {/if}
     </div>

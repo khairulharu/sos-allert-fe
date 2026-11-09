@@ -176,6 +176,20 @@
     }
 
     if (ownCoords) {
+      // A network fix can be kilometres off; show the area the browser reports
+      // instead of a point that claims precision it does not have.
+      const accuracy = Number(own?.accuracy)
+      if (Number.isFinite(accuracy) && accuracy > 0) {
+        L.circle(ownCoords, {
+          radius: accuracy,
+          color: '#2F6BFF',
+          weight: 1,
+          opacity: 0.35,
+          fillColor: '#2F6BFF',
+          fillOpacity: 0.08,
+          interactive: false,
+        }).addTo(markersLayer)
+      }
       L.marker(ownCoords, { icon: youIcon(), keyboard: false, zIndexOffset: 1000 })
         .addTo(markersLayer)
         .bindTooltip('You', { direction: 'top', offset: [0, -12] })

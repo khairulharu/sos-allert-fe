@@ -246,24 +246,45 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `logout()`, which calls `DELETE /api/users` and clears the token + stored user,
   so signing out really revokes the session (previously it only reset the local
   flags and a reload logged the user straight back in).
-- `src/lib/components/HomeView.svelte` — quick actions, nearby responders,
-  recent activity. Location is read-only here: `own`, `responders`,
+- `src/lib/components/HomeView.svelte` — full-bleed, map-first home:
+  a fullscreen `MapCard` is the surface. At the top is a full-bleed gradient
+  header (`from-white via-[#F8FAFF] to-[#EAF1FB]`) — no outer top/side gap,
+  20 px top padding and 16 px bottom padding — with `Hi, <first name>`, the
+  date beneath it, an outlined `$place` chip whose small MapPin glows blue, a
+  `Responders · <count>` line with a pulsing live dot, the OSM credit, and
+  40 px bell/profile buttons that navigate to Alerts/Profile. There is no
+  MapPin tile beside the greeting. It is informational only
+  (`pointer-events-none`); the credit link and the two buttons re-enable
+  pointer events.
+  The date switches to the short form below 360 px, and the header refreshes on
+  a minute clock together with the incoming alert's age. There is no greeting
+  card, lower-left panel, or quick-action sheet — Call 112, Share location, and
+  Contacts live on their own pages/nav. The incoming banner and right-side
+  recenter/radius controls flow 12 px below the header; controls hide while the
+  banner is up. `App.svelte` gives Home a non-scrolling full-height viewport
+  (the other tabs still scroll) and keeps it mounted (hidden) so returning to
+  Home reuses the same Leaflet map; it no longer owns a poller or geolocation
+  call. Location is read-only: `own`, `responders`,
   `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, and the
-  pill under the greeting shows the reverse-geocoded heartbeat location
-  (`Locating…` → `Kuta, Badung`, `Location unavailable` when the heartbeat or
-  the geocoder has no answer) from the shared `place` store. It no longer owns
-  a poller or geolocation call, and `App.svelte` keeps it mounted (hidden) so
-  returning to Home reuses the same Leaflet map instead of rebuilding it.
+  header shows `$place` (`Locating…`, then `Location unavailable` when the
+  heartbeat/geocoder has no answer). The radius toggle is
+  local state bound to `MapCard`'s `radiusVisible`; recenter calls the exposed
+  `mapRef.recenter()`. Home's props are `user`, `onnavigate`, `incoming`,
+  `onviewalert`, `ondismissincoming`, `coords`, and `live`.
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no
   token). Props: `own` (`GET /api/location` payload), `responders`
   (`nearby` items), `focus` (incoming alert location; centers the map and draws
   an amber pin), `live` (tracking store frame), `radiusM`, `height` (height
-  class; Home passes `h-[300px]`, the incoming sheet `h-[132px]`),
-  `showControls`, `showRadiusDefault`. Draws the radius circle (dashed
-  `#FF3B30`, 1.5 px, stroke 0.55 / fill 0.11), blue own dot, generic masked
-  responder pins, and a pulsing red pin that follows `LOCATION_UPDATE`; the
-  live pin is removed on terminal status. A `ResizeObserver` re-measures the
-  container (`map.invalidateSize()`) so the map survives being hidden and shown.
+  class; the incoming sheet passes `h-[132px]`), `showControls`,
+  `showRadiusDefault`, `radiusVisible` (controlled override for the circle),
+  `fullscreen` (absolute inset-0 surface, no controls/footer, softer radius
+  fill, Home's mode), `showFooter`, `showAttribution` (Leaflet's own credit).
+  It exposes `recenter()`. Draws the radius circle (dashed `#FF3B30`, 1.5 px,
+  stroke 0.55 / fill 0.11; fullscreen uses stroke 0.50 / fill 0.06), blue own
+  dot, generic masked responder pins, and a pulsing red pin that follows
+  `LOCATION_UPDATE`; the live pin is removed on terminal status. A
+  `ResizeObserver` re-measures the container (`map.invalidateSize()`) so the map
+  survives being hidden and shown.
 - `src/lib/components/AlertIncoming.svelte` — real inbox alert sheet. Receives
   one `AlertDetailResponse`, computes approximate distance from own coords to
   the masked location, and calls the app's respond handler. It also takes the

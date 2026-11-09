@@ -503,19 +503,20 @@
       <main
         bind:this={scrollEl}
         inert={modalOpen}
-        class="relative min-h-0 flex-1 overflow-y-auto pb-36 no-scrollbar"
+        class="relative min-h-0 flex-1 no-scrollbar {tab === 'home'
+          ? 'overflow-hidden'
+          : 'overflow-y-auto pb-36'}"
       >
         <!-- Home stays mounted (hidden, not destroyed) so returning to it does
-             not rebuild the Leaflet map or restart the location flow. -->
-        <div class:hidden={tab !== 'home'}>
+             not rebuild the Leaflet map or restart the location flow. It fills
+             the viewport: its map runs edge to edge under the floating nav. -->
+        <div class="h-full" class:hidden={tab !== 'home'}>
           <HomeView
             user={currentUser}
             onnavigate={navigate}
-            onnotify={notify}
             incoming={pendingAlert}
             onviewalert={() => (incomingOpen = true)}
             ondismissincoming={dismissIncoming}
-            onsignout={onSignOut}
             coords={lastCoord}
             live={mapLive}
           />

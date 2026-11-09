@@ -152,12 +152,20 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   provider. `resolvePlace()` returns `"Kuta, Badung"`-style labels or `null`.
 - `src/lib/geo.js` — session-scoped location state, owned once rather than per
   view: `own` (`GET /api/location` heartbeat), `liveFix` (newest browser fix),
-  `responders`, `nearbyRadius`, `nearbyLoading`, `nearbyError`.
+  `responders`, `nearbyRadius`, `nearbyLoading`, `nearbyReady`, `nearbyError`.
   `startNearbyPolling({ onSessionExpired })` / `stopNearbyPolling()` mirror the
   inbox poller and are driven by `App.svelte` on restore/login and logout/`401`.
   `refreshNearby()` reads the stored heartbeat (`404` → publishes one browser
-  fix, then re-reads) and calls `location.nearby(1000)`; concurrent callers
-  share one in-flight request. `startPositionWatch()`/`stopPositionWatch()` own
+  fix, then re-reads) and calls `location.nearby(get(nearbyRadius))` (1 km by
+  default); concurrent callers share one in-flight request. `refreshNearbyNow()`
+  (`App.svelte` calls it after every successful heartbeat `PUT`, so the count
+  does not trail the poll by 15 s) and `setNearbyRadius(meters)` (Home's radius
+  control; 100–`NEARBY_RADIUS_MAX_M` = 5000, re-searches immediately) are the
+  only writers of the radius. `nearbyError` carries the reason the list is
+  empty (`Location not shared yet` for a `404`, the fetch message otherwise) and
+  `nearbyReady` marks that an answer has arrived — the header uses both so an
+  empty list, a missing heartbeat and a failed request are three different
+  claims. `startPositionWatch()`/`stopPositionWatch()` own
   the app's only `watchPosition` (`enableHighAccuracy`, `maximumAge: 0`), so a
   session streams fixes instead of asking once a minute; `liveFix` carries
   `{latitude, longitude, accuracy, speed, heading, at}`. `browserPosition()`
@@ -273,13 +281,19 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   banner is up. `App.svelte` gives Home a non-scrolling full-height viewport
   (the other tabs still scroll) and keeps it mounted (hidden) so returning to
   Home reuses the same Leaflet map; it no longer owns a poller or geolocation
-  call. Location is read-only: `responders`,
-  `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, the own
+  call. Location is read-only in Home: `responders`,
+  `nearbyRadius`/`nearbyLoading`/`nearbyReady`/`nearbyError` come from
+  `$lib/geo.js`, the own
   pin is `$liveFix ?? $own` (live GPS with heartbeat fallback, plus the accuracy
   circle), and the
   header shows `$place` (`Locating…`, then `Location unavailable` when the
-  heartbeat/geocoder has no answer). The radius toggle is
-  local state bound to `MapCard`'s `radiusVisible`; recenter calls the exposed
+  heartbeat/geocoder has no answer). The `Responders` line never lies: it reads
+  `N nearby · 1 km` / `None nearby · 1 km` only for a real answer at the current
+  radius, and otherwise `Locating…`/`Checking…`/`$nearbyError` — do not collapse
+  those back into `None nearby`. The radius button switches the **search**
+  radius between 1 km (default) and 5 km (`setNearbyRadius`, calls
+  `refreshNearby()`), so the circle and the count describe the same search, and
+  the header's radius label follows. Recenter calls the exposed
   `mapRef.recenter()`. Home's props are `user`, `onnavigate`, `incoming`,
   `onviewalert`, `ondismissincoming`, `coords`, and `live`.
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no
@@ -573,7 +587,13 @@ SOS shows a real OS notification even while the tab is in the background.
   without one). So a device whose app is closed — or which only wakes up for push
   — never appears as a nearby pin, and an empty map is usually that rule rather
   than a rendering bug. Responder pins also share the masked ~100 m grid, so a
-  pin can sit under the caller's own dot.
+  pin can sit under the caller's own dot. **The nearby radius (1 km, Home can
+  widen to 5 km) is not the fan-out radius**: `findRecipients` walks the
+  adaptive tiers `[1000, 2000, 5000]` (`internal/config/notification.go`) upward
+  until `MinRecipients` fresh users are found, so an alert can reach a device
+  that the 1 km map never counted — that asymmetry is expected, not a bug.
+  Diagnose a "the other phone never showed up" report with
+  `GET /api/location` (is `last_seen` under 2 min?) before suspecting the UI.
 - Who is coming is now visible: `AlertDetailResponse.responders`
   (`ResponderSummary`: `user_id`, optional `name`, `distance_m`, `eta_seconds`,
   `responded_at`) is **participant-only** — the sender and recorded responders

@@ -30,6 +30,7 @@
     stopPositionWatch,
     startNearbyPolling,
     stopNearbyPolling,
+    refreshNearbyNow,
   } from '$lib/geo.js'
   import { syncPushSubscription, disablePush } from '$lib/push.js'
 
@@ -412,6 +413,10 @@
       await locationApi.update(pos.lat, pos.lng)
       lastPublished = pos
       lastPublishedAt = Date.now()
+      // Our own freshness is what makes this device visible to the others, so
+      // re-read the count now instead of waiting up to 15 s for the poll tick.
+      // Cheap: the in-flight guard in refreshNearby() dedupes overlapping calls.
+      refreshNearbyNow()
     } catch {
       /* heartbeat failures are safe to ignore */
     }

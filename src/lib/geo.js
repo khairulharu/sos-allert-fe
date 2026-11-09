@@ -19,6 +19,10 @@ import { cachedPlace, resolvePlace } from './place.js'
 import { place } from './stores.js'
 
 export const NEARBY_RADIUS_M = 1000
+// The widest radius the backend accepts, and the tier the SOS fan-out can
+// reach (adaptive radii 1/2/5 km). Home can switch to it so the header count
+// matches who an alert would actually notify.
+export const NEARBY_RADIUS_MAX_M = 5000
 const POLL_MS = 15000
 // A fix younger than this is reused. Older than this it is never returned:
 // republishing an old coordinate with a fresh `last_seen` is what made a stale
@@ -30,7 +34,11 @@ export const own = writable(null)
 export const responders = writable([])
 export const nearbyRadius = writable(NEARBY_RADIUS_M)
 export const nearbyLoading = writable(true)
+// `nearbyError` is the user-facing reason the list is empty; `nearbyReady` says
+// whether an answer has ever arrived, so an empty list can be reported as
+// "None nearby" instead of "Locating…".
 export const nearbyError = writable('')
+export const nearbyReady = writable(false)
 
 let timer = null
 let visibilityHandler = null
@@ -154,8 +162,10 @@ export async function refreshNearby() {
       if (stored) own.set(stored)
 
       if (!stored) {
+        // No heartbeat: nothing to search from. Say so instead of letting the
+        // header claim there is nobody around.
         responders.set([])
-        nearbyError.set('Waiting for a location heartbeat…')
+        nearbyError.set('Location not shared yet')
         return
       }
 
@@ -171,14 +181,40 @@ export async function refreshNearby() {
         expired?.()
         return
       }
+      if (err?.status === 404) {
+        // The backend answers 404 when the caller itself has no heartbeat.
+        responders.set([])
+        nearbyError.set('Location not shared yet')
+        return
+      }
       nearbyError.set(err?.message || 'Could not load nearby responders.')
     } finally {
       nearbyLoading.set(false)
+      nearbyReady.set(true)
       inFlight = null
     }
   })()
 
   return inFlight
+}
+
+// Home's radius control: the search radius really changes, so the circle on the
+// map and the "N nearby" count describe the same search.
+export function setNearbyRadius(meters) {
+  const radius = Math.round(Number(meters))
+  if (!Number.isFinite(radius) || radius < 100 || radius > NEARBY_RADIUS_MAX_M) return
+  if (get(nearbyRadius) === radius) return
+  nearbyRadius.set(radius)
+  // A new radius is a new answer: show it as loading, not as an empty list.
+  nearbyLoading.set(true)
+  refreshNearby()
+}
+
+// Called after this device published a heartbeat: its own freshness is what
+// makes it visible to others, and the answer is worth re-reading immediately
+// instead of on the next 15 s tick.
+export function refreshNearbyNow() {
+  return refreshNearby()
 }
 
 export function startNearbyPolling(options = {}) {
@@ -210,6 +246,7 @@ export function stopNearbyPolling() {
   responders.set([])
   nearbyRadius.set(NEARBY_RADIUS_M)
   nearbyLoading.set(true)
+  nearbyReady.set(false)
   nearbyError.set('')
   place.set('')
 }

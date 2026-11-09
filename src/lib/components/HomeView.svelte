@@ -2,7 +2,18 @@
   import { X, Siren, Crosshair, Layers, MapPin, Bell } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
   import { place } from '$lib/stores.js'
-  import { own, liveFix, responders, nearbyLoading, nearbyRadius } from '$lib/geo.js'
+  import {
+    own,
+    liveFix,
+    responders,
+    nearbyLoading,
+    nearbyReady,
+    nearbyError,
+    nearbyRadius,
+    NEARBY_RADIUS_M,
+    NEARBY_RADIUS_MAX_M,
+    setNearbyRadius,
+  } from '$lib/geo.js'
   import { emergencyLabel, distanceMeters, formatDistance } from '$lib/alertMeta.js'
 
   let {
@@ -53,13 +64,23 @@
   const areaLabel = $derived(
     $place || ($nearbyLoading ? 'Locating…' : 'Location unavailable'),
   )
-  const responderCount = $derived(
-    $nearbyLoading
-      ? 'Locating…'
-      : $responders.length > 0
-        ? `${$responders.length} nearby`
-        : 'None nearby',
+
+  // The count is the backend's answer, and every way of not having one says so:
+  // "None nearby" is reserved for a real, empty answer at this radius. Collapsing
+  // a 404 (no heartbeat), a network failure and a genuinely empty area into the
+  // same words is what made a two-device test look like a rendering bug.
+  const radiusLabel = $derived(
+    $nearbyRadius >= 1000 ? `${$nearbyRadius / 1000} km` : `${$nearbyRadius} m`,
   )
+  const responderCount = $derived.by(() => {
+    if ($nearbyLoading && !$nearbyReady) return 'Locating…'
+    if ($nearbyError) return $nearbyError
+    if (!$nearbyReady) return 'Checking…'
+    if ($nearbyLoading) return 'Checking…'
+    return $responders.length > 0
+      ? `${$responders.length} nearby · ${radiusLabel}`
+      : `None nearby · ${radiusLabel}`
+  })
 
   function timeAgoShort(ts, at = Date.now()) {
     const value = Number(ts)
@@ -88,14 +109,18 @@
   )
 
   let mapRef = $state(null)
-  let radiusOn = $state(true)
+  // The radius control used to only show/hide the circle while the search
+  // stayed at 1 km; now it switches the search itself, so the count and the
+  // circle cannot disagree.
+  const radiusOn = $derived($nearbyRadius > 0)
+  const wideRadius = $derived($nearbyRadius >= NEARBY_RADIUS_MAX_M)
 
   function recenter() {
     mapRef?.recenter()
   }
 
   function toggleRadius() {
-    radiusOn = !radiusOn
+    setNearbyRadius(wideRadius ? NEARBY_RADIUS_M : NEARBY_RADIUS_MAX_M)
   }
 </script>
 
@@ -239,12 +264,15 @@
           </button>
           <button
             type="button"
-            aria-label="Toggle radius circle"
-            aria-pressed={radiusOn}
+            aria-label={wideRadius
+              ? 'Search within 1 km instead of 5 km'
+              : 'Search within 5 km instead of 1 km'}
+            aria-pressed={wideRadius}
+            title={wideRadius ? 'Searching 5 km' : 'Searching 1 km'}
             onclick={toggleRadius}
-            class="grid h-10 w-10 place-items-center rounded-full shadow-[0_10px_30px_-14px_rgba(16,24,40,0.45)] ring-1 ring-black/5 backdrop-blur-xl transition active:scale-95 {radiusOn
-              ? 'bg-white/90 text-ink/70 hover:text-ink'
-              : 'bg-ink text-white'}"
+            class="grid h-10 w-10 place-items-center rounded-full shadow-[0_10px_30px_-14px_rgba(16,24,40,0.45)] ring-1 ring-black/5 backdrop-blur-xl transition active:scale-95 {wideRadius
+              ? 'bg-ink text-white'
+              : 'bg-white/90 text-ink/70 hover:text-ink'}"
           >
             <Layers size={17} strokeWidth={2.2} />
           </button>

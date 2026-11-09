@@ -16,6 +16,11 @@
     radiusM = 1000,
     showControls = true,
     showRadiusDefault = true,
+    // Controlled from the parent when supplied (HomeView draws its own chrome);
+    // left undefined, the component owns the toggle like before.
+    radiusVisible = undefined,
+    fullscreen = false,
+    showAttribution = true,
   } = $props()
 
   const FALLBACK_CENTER = [-6.2, 106.816]
@@ -27,7 +32,8 @@
   let liveMarker = null
   let resizeObserver = null
   let centered = false
-  let showRadius = $state(untrack(() => showRadiusDefault))
+  let localRadius = $state(untrack(() => showRadiusDefault))
+  const showRadius = $derived(radiusVisible === undefined ? localRadius : radiusVisible)
 
   function coordsFor(value) {
     return value &&
@@ -159,10 +165,12 @@
         radius: radiusM,
         color: '#FF3B30',
         weight: 1.5,
-        opacity: 0.55,
+        opacity: fullscreen ? 0.5 : 0.55,
         dashArray: '4 6',
         fillColor: '#FF3B30',
-        fillOpacity: 0.11,
+        // Fullscreen the circle covers most of the viewport; keep the tint a
+        // hint so map labels stay the surface, not the overlay.
+        fillOpacity: fullscreen ? 0.06 : 0.11,
         interactive: false,
       }).addTo(markersLayer)
     }
@@ -190,10 +198,10 @@
   onMount(() => {
     map = L.map(mapEl, {
       zoomControl: false,
-      attributionControl: true,
+      attributionControl: showAttribution,
       scrollWheelZoom: false,
     })
-    map.attributionControl.setPrefix('')
+    map.attributionControl?.setPrefix('')
     map.setView(center, 15)
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
@@ -238,18 +246,22 @@
     syncLiveMarker()
   })
 
-  function recenter() {
+  // Exported so a parent that hides `showControls` (HomeView) can drive the
+  // same recenter action from its own floating chrome.
+  export function recenter() {
     map?.setView(center, 15)
     centered = true
   }
 
   function toggleRadius() {
-    showRadius = !showRadius
+    if (radiusVisible === undefined) localRadius = !localRadius
   }
 </script>
 
 <div
-  class="map-shell relative overflow-hidden rounded-[24px] bg-[#E9EDF0] {height} {showFooter
+  class="map-shell relative bg-[#E9EDF0] {fullscreen
+    ? 'absolute inset-0 h-full w-full'
+    : 'overflow-hidden rounded-[24px]'} {fullscreen ? '' : height} {showFooter
     ? 'with-footer'
     : ''}"
 >
@@ -261,7 +273,7 @@
   ></div>
 
   <!-- map controls -->
-  {#if showControls}
+  {#if showControls && !fullscreen}
   <div class="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3">
     <span
       class="inline-flex items-center gap-1.5 rounded-full bg-white/90 px-3 py-1.5 text-[12.5px] font-semibold text-ink shadow-sm ring-1 ring-black/5 backdrop-blur-md"
@@ -296,7 +308,7 @@
   </div>
   {/if}
 
-  {#if showFooter}
+  {#if showFooter && !fullscreen}
     <!-- This element is a <button> exactly when a click handler is attached. -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <svelte:element

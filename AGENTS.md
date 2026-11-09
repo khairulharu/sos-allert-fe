@@ -151,15 +151,21 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   and deduped per bucket, so a wandering heartbeat does not re-ask the
   provider. `resolvePlace()` returns `"Kuta, Badung"`-style labels or `null`.
 - `src/lib/geo.js` — session-scoped location state, owned once rather than per
-  view: `own` (`GET /api/location` heartbeat), `responders`, `nearbyRadius`,
-  `nearbyLoading`, `nearbyError`. `startNearbyPolling({ onSessionExpired })` /
-  `stopNearbyPolling()` mirror the inbox poller and are driven by `App.svelte`
-  on restore/login and logout/`401`. `refreshNearby()` reads the stored
-  heartbeat (`404` → publishes one browser fix, then re-reads) and calls
-  `location.nearby(1000)`; concurrent callers share one in-flight request.
-  `browserPosition()` is the app's only geolocation call site: it caches the
-  last fix for 45 s, dedupes concurrent askers, and falls back to the last known
-  fix when a new acquisition fails. It also subscribes to `own` and publishes
+  view: `own` (`GET /api/location` heartbeat), `liveFix` (newest browser fix),
+  `responders`, `nearbyRadius`, `nearbyLoading`, `nearbyError`.
+  `startNearbyPolling({ onSessionExpired })` / `stopNearbyPolling()` mirror the
+  inbox poller and are driven by `App.svelte` on restore/login and logout/`401`.
+  `refreshNearby()` reads the stored heartbeat (`404` → publishes one browser
+  fix, then re-reads) and calls `location.nearby(1000)`; concurrent callers
+  share one in-flight request. `startPositionWatch()`/`stopPositionWatch()` own
+  the app's only `watchPosition` (`enableHighAccuracy`, `maximumAge: 0`), so a
+  session streams fixes instead of asking once a minute; `liveFix` carries
+  `{latitude, longitude, accuracy, speed, heading, at}`. `browserPosition()`
+  returns the newest fix younger than 2 minutes, dedupes concurrent askers, and
+  otherwise acquires one — it never returns a stale fix as current. `accuracy`
+  (metres) draws the map's uncertainty circle and rides the SOS trigger as
+  `accuracy_meters`; a browser without GPS reports its WiFi/IP position, which
+  no web API can force to GPS. It also subscribes to `own` and publishes
   the reverse-geocoded label into the `place` store (src/lib/place.js), without
   blanking a known label when `own` is transiently empty.
 - `src/lib/mic.js` — microphone permission, handled like the location prompt.
@@ -225,12 +231,15 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   service-worker message while open), and that sheet opens immediately — without
   it the first poll only drew a banner, so tapping the notification appeared to
   do nothing. `POST /respond` uses
-  browser coords → stored heartbeat → fallback; success starts the responder
-  WS channel and shows ETA/distance. Terminal statuses raise a toast.
-  Fallback coords are Bali (`-8.65, 115.22`) if browser geolocation is denied;
-  heartbeat errors are currently swallowed. The heartbeat awaits
-  `browserPosition()` (`$lib/geo.js`, shared with the map) before each `PUT`, so
-  the two writers can never publish different coordinates. It also starts/stops
+  browser coords → stored heartbeat, and refuses with "Turn on location" when
+  neither exists; success starts the responder WS channel and shows
+  ETA/distance. Terminal statuses raise a toast. There is no fabricated
+  fallback (the Bali constant is gone). The heartbeat awaits
+  `browserPosition()` (`$lib/geo.js`, shared with the map and the SOS trigger)
+  before each `PUT`; it publishes on movement (≥25 m, at most every 10 s) as
+  well as the 60 s keepalive, skips the `PUT` when no fix younger than 2
+  minutes exists (a dead GPS ages out instead of being republished as fresh),
+  and re-acquires on `visibilitychange`. It also starts/stops
   `startNearbyPolling()`/`stopNearbyPolling()` with the session, and keeps
   `HomeView` mounted (hidden) so tab switches do not rebuild the map or re-run
   the location flow. The microphone permission is primed once per session
@@ -264,15 +273,18 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   banner is up. `App.svelte` gives Home a non-scrolling full-height viewport
   (the other tabs still scroll) and keeps it mounted (hidden) so returning to
   Home reuses the same Leaflet map; it no longer owns a poller or geolocation
-  call. Location is read-only: `own`, `responders`,
-  `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, and the
+  call. Location is read-only: `responders`,
+  `nearbyRadius`/`nearbyLoading`/`nearbyError` come from `$lib/geo.js`, the own
+  pin is `$liveFix ?? $own` (live GPS with heartbeat fallback, plus the accuracy
+  circle), and the
   header shows `$place` (`Locating…`, then `Location unavailable` when the
   heartbeat/geocoder has no answer). The radius toggle is
   local state bound to `MapCard`'s `radiusVisible`; recenter calls the exposed
   `mapRef.recenter()`. Home's props are `user`, `onnavigate`, `incoming`,
   `onviewalert`, `ondismissincoming`, `coords`, and `live`.
 - `src/lib/components/MapCard.svelte` — Leaflet + OpenStreetMap map (no
-  token). Props: `own` (`GET /api/location` payload), `responders`
+  token). Props: `own` (`GET /api/location` payload or `liveFix`; a finite
+  `accuracy` draws the blue uncertainty circle), `responders`
   (`nearby` items), `focus` (incoming alert location; centers the map and draws
   an amber pin), `live` (tracking store frame), `radiusM`, `height` (height
   class; the incoming sheet passes `h-[132px]`), `showControls`,

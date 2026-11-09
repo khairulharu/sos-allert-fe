@@ -19,6 +19,7 @@
   import MapCard from './MapCard.svelte'
   import { MIC_HELP, micBlockReason, micErrorText } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
+  import { browserPosition, liveFix, startPositionWatch } from '$lib/geo.js'
   import { initialsFor, responderMeta, severityWord } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
   import { trap } from '$lib/focus.js'
@@ -28,7 +29,7 @@
     onnotify,
     ontrack,
     live = null,
-    coords = { lat: -8.65, lng: 115.22 },
+    coords = null,
   } = $props()
 
   // ---- phases: 'describe' | 'count' | 'sending' | 'active' | 'ended' | 'error' ----
@@ -105,12 +106,16 @@
     triageResult?.severity >= 0.67 ? 5000 : triageResult?.severity >= 0.34 ? 2000 : 1000,
   )
   // The sender's own position for the map: the live tracking frame once the
-  // socket reports, the app's last fix before that.
-  const mapPosition = $derived(
-    Number.isFinite(live?.latitude) && Number.isFinite(live?.longitude)
-      ? { latitude: live.latitude, longitude: live.longitude }
-      : { latitude: coords.lat, longitude: coords.lng },
-  )
+  // socket reports, the shared browser fix before that.
+  const mapPosition = $derived.by(() => {
+    if (Number.isFinite(live?.latitude) && Number.isFinite(live?.longitude)) {
+      return { latitude: live.latitude, longitude: live.longitude }
+    }
+    if (Number.isFinite(coords?.lat) && Number.isFinite(coords?.lng)) {
+      return { latitude: coords.lat, longitude: coords.lng, accuracy: coords.accuracy }
+    }
+    return null
+  })
   const TRIAGE_COLORS = { MEDICAL: 'text-[#FFB3B3]', ACCIDENT: 'text-[#FFD580]', DANGER: 'text-[#FF8080]' }
   const TRIAGE_BG = { MEDICAL: 'from-[#FF4A3F] via-[#CC2019] to-[#991510]', ACCIDENT: 'from-[#FF8C00] via-[#CC6600] to-[#994400]', DANGER: 'from-[#B81710] via-[#99100A] to-[#6B0A06]' }
   const TRIAGE_BG_CARD = { MEDICAL: 'bg-[#FFECEB]', ACCIDENT: 'bg-[#FFF6E5]', DANGER: 'bg-[#FFE8E6]' }
@@ -193,15 +198,12 @@
 
   async function doTrigger() {
     if (destroyed) return
-    // Real API call. Let navigator location override prop coords if available.
-    const pos = await new Promise((res) => {
-      if (navigator.geolocation) navigator.geolocation.getCurrentPosition(
-        (p) => res({ lat: p.coords.latitude, lng: p.coords.longitude }),
-        () => res(coords),
-        { enableHighAccuracy: true, timeout: 8000 },
-      )
-      else res(coords)
-    })
+    // The same live fix the map and heartbeat use, so the alert cannot start
+    // somewhere the app is not showing. With no fix at all, omit the
+    // coordinates and let the backend use the stored heartbeat.
+    const pos =
+      (await browserPosition()) ||
+      (Number.isFinite(coords?.lat) && Number.isFinite(coords?.lng) ? coords : null)
 
     // The clip from the countdown. Classify it first so the first fan-out
     // already uses the audio level: explicit `emergency_type`/`severity`/
@@ -235,9 +237,12 @@
     }
 
     const fields = {
-      latitude: pos.lat,
-      longitude: pos.lng,
       description: description.trim(),
+    }
+    if (pos) {
+      fields.latitude = pos.lat
+      fields.longitude = pos.lng
+      if (Number.isFinite(pos.accuracy)) fields.accuracy_meters = pos.accuracy
     }
     if (audioTriage) {
       fields.emergency_type = audioTriage.emergency_type
@@ -270,8 +275,8 @@
     applyTriage(result.triage)
     ontrack?.(result.alert_id, {
       status: result.status,
-      latitude: pos.lat,
-      longitude: pos.lng,
+      latitude: pos?.lat,
+      longitude: pos?.lng,
       updatedAt: result.triggered_at,
     })
     phase = 'active'
@@ -581,7 +586,6 @@
   })
 
   // ---- WebSocket live tracking (sender) ----
-  let watchId = null
   let lastBreadcrumb = null
   let lastSentAt = 0
 
@@ -596,32 +600,34 @@
   $effect(() => {
     if (phase !== 'active') return
 
-    lastBreadcrumb = { latitude: coords.lat, longitude: coords.lng }
-    emitBreadcrumb(true)
+    // Stream the sender's position over the socket from the session-wide
+    // watch: one geolocation consumer, so the breadcrumb, the heartbeat and
+    // the map always show the same fix. `startPositionWatch()` is idempotent.
+    startPositionWatch()
 
-    if (navigator.geolocation) {
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          lastBreadcrumb = {
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy_meters: pos.coords.accuracy,
-            speed_mps: Number.isFinite(pos.coords.speed) ? pos.coords.speed : undefined,
-            heading_deg: Number.isFinite(pos.coords.heading) ? pos.coords.heading : undefined,
-          }
-          emitBreadcrumb()
-        },
-        () => {},
-        { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 },
-      )
+    if (Number.isFinite(coords?.lat) && Number.isFinite(coords?.lng)) {
+      lastBreadcrumb = { latitude: coords.lat, longitude: coords.lng }
+      emitBreadcrumb(true)
     }
 
+    const unsubscribe = liveFix.subscribe((f) => {
+      if (!f) return
+      lastBreadcrumb = {
+        latitude: f.latitude,
+        longitude: f.longitude,
+        accuracy_meters: f.accuracy ?? undefined,
+        speed_mps: Number.isFinite(f.speed) ? f.speed : undefined,
+        heading_deg: Number.isFinite(f.heading) ? f.heading : undefined,
+      }
+      emitBreadcrumb()
+    })
+
+    // Re-send the last fix every 5 s so a stationary sender still looks live.
     const timer = setInterval(() => emitBreadcrumb(true), 5000)
 
     return () => {
+      unsubscribe()
       clearInterval(timer)
-      if (watchId != null && navigator.geolocation) navigator.geolocation.clearWatch(watchId)
-      watchId = null
     }
   })
 
@@ -868,7 +874,9 @@
         </h2>
         <p class="mt-1.5 flex items-center gap-1.5 text-[13px] text-white/60">
           <MapPin size={12} class="text-sos" />
-          {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} · Sharing live location
+          {mapPosition
+            ? `${mapPosition.latitude.toFixed(4)}, ${mapPosition.longitude.toFixed(4)} · Sharing live location`
+            : 'Waiting for GPS · using your last known location'}
         </p>
       </div>
 

@@ -11,6 +11,8 @@
 // place that asks the browser, remembers the last answer, and dedupes
 // concurrent callers, so the heartbeat PUT, the map center, and the reverse
 // geocoder cannot disagree by a coordinate bucket and make the label flip.
+// `startPositionWatch()` keeps that answer live for the whole session; the
+// pollers only read it.
 import { get, writable } from 'svelte/store'
 import { location as locationApi } from './api.js'
 import { cachedPlace, resolvePlace } from './place.js'
@@ -18,9 +20,10 @@ import { place } from './stores.js'
 
 export const NEARBY_RADIUS_M = 1000
 const POLL_MS = 15000
-// A fix younger than this is reused instead of asking the GPS again; the
-// heartbeat (60 s) therefore acquires at most one fix per tick.
-const FIX_MAX_AGE_MS = 45000
+// A fix younger than this is reused. Older than this it is never returned:
+// republishing an old coordinate with a fresh `last_seen` is what made a stale
+// position look live in the responders' list.
+const FIX_MAX_AGE_MS = 2 * 60 * 1000
 
 // Stored heartbeat (GET /api/location) the map center and header pill use.
 export const own = writable(null)
@@ -34,24 +37,67 @@ let visibilityHandler = null
 let inFlight = null
 let onSessionExpired = null
 
-// Last known browser fix. Returned when a new acquisition fails, so a denied
-// or slow GPS degrades to a slightly stale position instead of "no location".
+// Last known browser fix. Kept even when it ages so callers can fall back to it
+// once they know it is stale; `browserPosition()` never returns one that old.
 let fix = null
 let fixInFlight = null
+let watchId = null
 
-export function browserPosition({ timeout = 6000, maxAge = FIX_MAX_AGE_MS } = {}) {
+/** Newest fix from the continuous watch: { latitude, longitude, accuracy, at }. */
+export const liveFix = writable(null)
+
+function rememberFix(pos) {
+  fix = {
+    at: Date.now(),
+    latitude: pos.coords.latitude,
+    longitude: pos.coords.longitude,
+    // Metres; null when the browser cannot say. A coarse fix (WiFi/IP, no GPS)
+    // can be kilometres off, so the map must show it as an area, not a point.
+    accuracy: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
+    speed: Number.isFinite(pos.coords.speed) ? pos.coords.speed : null,
+    heading: Number.isFinite(pos.coords.heading) ? pos.coords.heading : null,
+  }
+  liveFix.set(fix)
+  return { lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy }
+}
+
+// One continuous stream per session instead of a getCurrentPosition per
+// consumer. `maximumAge: 0` refuses a cached fix, which is the difference
+// between "moved 10 m" and "the provider still reports the old cell".
+// Web geolocation cannot force GPS: `enableHighAccuracy` only asks for it, so a
+// device without a GPS chip keeps reporting its network position (accuracy
+// says how far off it may be).
+export function startPositionWatch() {
+  if (watchId != null || typeof navigator === 'undefined' || !navigator.geolocation) return
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => rememberFix(pos),
+    () => {}, // keep the last fix; its age and accuracy say how much to trust it
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 },
+  )
+}
+
+export function stopPositionWatch() {
+  if (watchId != null && typeof navigator !== 'undefined' && navigator.geolocation) {
+    navigator.geolocation.clearWatch(watchId)
+  }
+  watchId = null
+  fix = null
+  liveFix.set(null)
+}
+
+export function browserPosition({ timeout = 8000, maxAge = FIX_MAX_AGE_MS } = {}) {
   if (typeof navigator === 'undefined' || !navigator.geolocation) return Promise.resolve(null)
-  if (fix && Date.now() - fix.at < maxAge) return Promise.resolve(fix.coords)
+  if (fix && Date.now() - fix.at <= maxAge) {
+    return Promise.resolve({ lat: fix.latitude, lng: fix.longitude, accuracy: fix.accuracy })
+  }
   if (fixInFlight) return fixInFlight
 
   const task = new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        fix = { at: Date.now(), coords: { lat: pos.coords.latitude, lng: pos.coords.longitude } }
-        resolve(fix.coords)
-      },
-      () => resolve(fix?.coords ?? null),
-      { enableHighAccuracy: true, timeout, maximumAge: maxAge },
+      (pos) => resolve(rememberFix(pos)),
+      // No fix is better than an old one reported as current.
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout, maximumAge: 0 },
     )
   })
   fixInFlight = task.finally(() => (fixInFlight = null))

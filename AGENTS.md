@@ -156,11 +156,18 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `startNearbyPolling({ onSessionExpired })` / `stopNearbyPolling()` mirror the
   inbox poller and are driven by `App.svelte` on restore/login and logout/`401`.
   `refreshNearby()` reads the stored heartbeat (`404` → publishes one browser
-  fix, then re-reads) and calls `location.nearby(get(nearbyRadius))` (1 km by
-  default); concurrent callers share one in-flight request. `refreshNearbyNow()`
+  fix, then re-reads) and calls `location.nearby(<requested radius>)` (1 km by
+  default); concurrent callers share one in-flight request **per radius**. The
+  radius is snapshotted when a read starts and an answer only writes state while
+  its own radius is still `$nearbyRadius`, so a slow 1 km response can never
+  overwrite a 5 km choice (issue #5) — never reinstate the global
+  `if (inFlight) return inFlight` guard or let a response call
+  `nearbyRadius.set()`. `refreshNearbyNow()`
   (`App.svelte` calls it after every successful heartbeat `PUT`, so the count
   does not trail the poll by 15 s) and `setNearbyRadius(meters)` (Home's radius
-  control; 100–`NEARBY_RADIUS_MAX_M` = 5000, re-searches immediately) are the
+  control; 100–`NEARBY_RADIUS_MAX_M` = 5000, re-searches immediately, and has no
+  "already this radius" early return because a tap that lost a race could then
+  be a silent no-op) are the
   only writers of the radius. `nearbyError` carries the reason the list is
   empty (`Location not shared yet` for a `404`, the fetch message otherwise) and
   `nearbyReady` marks that an answer has arrived — the header uses both so an

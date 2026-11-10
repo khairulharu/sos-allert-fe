@@ -14,7 +14,7 @@
 // `startPositionWatch()` keeps that answer live for the whole session; the
 // pollers only read it.
 import { get, writable } from 'svelte/store'
-import { location as locationApi } from './api.js'
+import { getSessionToken, location as locationApi } from './api.js'
 import { cachedPlace, resolvePlace } from './place.js'
 import { place } from './stores.js'
 
@@ -44,6 +44,9 @@ let timer = null
 let visibilityHandler = null
 let inFlight = null
 let onSessionExpired = null
+// Session generation for nearby reads. `stopNearbyPolling()` bumps it so a
+// chain that started before sign-out cannot continue with a missing token.
+let nearbyEpoch = 0
 
 // Last known browser fix. Kept even when it ages so callers can fall back to it
 // once they know it is stale; `browserPosition()` never returns one that old.
@@ -153,12 +156,28 @@ async function seedHeartbeat() {
   return await readOwn()
 }
 
+// A nearby read is a multi-step chain (own heartbeat -> maybe seed -> nearby).
+// The session can end between those steps, so each hop checks that this read
+// still belongs to the live session before issuing the next request or writing
+// state. Without it, a read started under the old token fires the final
+// /api/location/nearby with no Authorization header after sign-out (issue #6).
 export async function refreshNearby() {
+  const token = getSessionToken()
+  // No session: never make an unauthenticated location request.
+  if (!token) return
   if (inFlight) return inFlight
 
-  inFlight = (async () => {
+  const epoch = nearbyEpoch
+  const current = () => epoch === nearbyEpoch && getSessionToken() === token
+
+  const task = (async () => {
     try {
-      const stored = (await readOwn()) || (await seedHeartbeat())
+      let stored = await readOwn()
+      if (!current()) return
+      if (!stored) {
+        stored = await seedHeartbeat()
+        if (!current()) return
+      }
       if (stored) own.set(stored)
 
       if (!stored) {
@@ -170,11 +189,16 @@ export async function refreshNearby() {
       }
 
       const data = await locationApi.nearby(get(nearbyRadius))
+      if (!current()) return
       responders.set(Array.isArray(data?.responders) ? data.responders : [])
       const radius = Number(data?.radius_m)
       if (Number.isFinite(radius) && radius > 0) nearbyRadius.set(radius)
       nearbyError.set('')
     } catch (err) {
+      // A 401 from a read the session already ended is not news: the sign-out
+      // path has cleared the stores, and onSessionExpired no longer belongs to
+      // this epoch (it would be a no-op anyway).
+      if (!current()) return
       if (err?.status === 401) {
         const expired = onSessionExpired
         stopNearbyPolling()
@@ -189,13 +213,18 @@ export async function refreshNearby() {
       }
       nearbyError.set(err?.message || 'Could not load nearby responders.')
     } finally {
-      nearbyLoading.set(false)
-      nearbyReady.set(true)
-      inFlight = null
+      // stopNearbyPolling() bumps the epoch and drops inFlight; a late chain
+      // must not clear the flag of a newer one or overwrite its loading state.
+      if (current()) {
+        nearbyLoading.set(false)
+        nearbyReady.set(true)
+      }
+      if (inFlight === task) inFlight = null
     }
   })()
 
-  return inFlight
+  inFlight = task
+  return task
 }
 
 // Home's radius control: the search radius really changes, so the circle on the
@@ -234,6 +263,9 @@ export function startNearbyPolling(options = {}) {
 }
 
 export function stopNearbyPolling() {
+  // Invalidate reads already in flight: they may be sitting on an await and
+  // would otherwise proceed with the token the sign-out is about to delete.
+  nearbyEpoch++
   clearInterval(timer)
   timer = null
   if (visibilityHandler) {

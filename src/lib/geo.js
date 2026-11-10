@@ -43,6 +43,10 @@ export const nearbyReady = writable(false)
 let timer = null
 let visibilityHandler = null
 let inFlight = null
+// Radius of the read `inFlight` is currently answering. A read for a *different*
+// radius must not reuse it (that would swallow the user's new radius), so the
+// dedupe is per radius instead of global (issue #5).
+let inFlightRadius = null
 let onSessionExpired = null
 // Session generation for nearby reads. `stopNearbyPolling()` bumps it so a
 // chain that started before sign-out cannot continue with a missing token.
@@ -161,14 +165,27 @@ async function seedHeartbeat() {
 // still belongs to the live session before issuing the next request or writing
 // state. Without it, a read started under the old token fires the final
 // /api/location/nearby with no Authorization header after sign-out (issue #6).
+//
+// Two invariants keep Home's radius control honest (issue #5):
+//   - the radius is snapshotted when the read starts, so the request carries the
+//     radius the user is looking at, and
+//   - an answer only writes state while its own radius is still the chosen one,
+//     so a slow 1 km response can never overwrite a 5 km choice.
+// `nearbyRadius` is therefore written by `setNearbyRadius()` and the sign-out
+// reset only — never by a response.
 export async function refreshNearby() {
   const token = getSessionToken()
   // No session: never make an unauthenticated location request.
   if (!token) return
-  if (inFlight) return inFlight
+  const requestedRadius = get(nearbyRadius)
+  // Same radius already in flight: share that answer. A different radius is a
+  // different question, so it starts its own read instead of being skipped.
+  if (inFlight && inFlightRadius === requestedRadius) return inFlight
 
   const epoch = nearbyEpoch
   const current = () => epoch === nearbyEpoch && getSessionToken() === token
+  // Still the answer the UI is waiting for? Session alive and radius unchanged.
+  const fresh = () => current() && get(nearbyRadius) === requestedRadius
 
   const task = (async () => {
     try {
@@ -182,23 +199,28 @@ export async function refreshNearby() {
 
       if (!stored) {
         // No heartbeat: nothing to search from. Say so instead of letting the
-        // header claim there is nobody around.
+        // header claim there is nobody around. Same supersession rule: a read
+        // that already lost its radius does not get to write the header.
+        if (!fresh()) return
         responders.set([])
         nearbyError.set('Location not shared yet')
         return
       }
 
-      const data = await locationApi.nearby(get(nearbyRadius))
-      if (!current()) return
+      const data = await locationApi.nearby(requestedRadius)
+      // A superseded read (radius changed while it was in flight) must not write
+      // responders, the error, or the loading flag: those belong to the newer
+      // read now.
+      if (!fresh()) return
       responders.set(Array.isArray(data?.responders) ? data.responders : [])
-      const radius = Number(data?.radius_m)
-      if (Number.isFinite(radius) && radius > 0) nearbyRadius.set(radius)
       nearbyError.set('')
     } catch (err) {
       // A 401 from a read the session already ended is not news: the sign-out
       // path has cleared the stores, and onSessionExpired no longer belongs to
       // this epoch (it would be a no-op anyway).
       if (!current()) return
+      // Superseded by a read for a different radius: drop the error too.
+      if (!fresh()) return
       if (err?.status === 401) {
         const expired = onSessionExpired
         stopNearbyPolling()
@@ -215,15 +237,19 @@ export async function refreshNearby() {
     } finally {
       // stopNearbyPolling() bumps the epoch and drops inFlight; a late chain
       // must not clear the flag of a newer one or overwrite its loading state.
-      if (current()) {
+      if (fresh()) {
         nearbyLoading.set(false)
         nearbyReady.set(true)
       }
-      if (inFlight === task) inFlight = null
+      if (inFlight === task) {
+        inFlight = null
+        inFlightRadius = null
+      }
     }
   })()
 
   inFlight = task
+  inFlightRadius = requestedRadius
   return task
 }
 
@@ -232,7 +258,10 @@ export async function refreshNearby() {
 export function setNearbyRadius(meters) {
   const radius = Math.round(Number(meters))
   if (!Number.isFinite(radius) || radius < 100 || radius > NEARBY_RADIUS_MAX_M) return
-  if (get(nearbyRadius) === radius) return
+  // No "already this radius" early return: a tap that lost a race could leave
+  // the store matching the request while the visible answer still describes the
+  // old radius. Re-selecting the current radius just re-reads it, and
+  // refreshNearby() dedupes a read that is already in flight for it.
   nearbyRadius.set(radius)
   // A new radius is a new answer: show it as loading, not as an empty list.
   nearbyLoading.set(true)
@@ -274,6 +303,7 @@ export function stopNearbyPolling() {
   }
   onSessionExpired = null
   inFlight = null
+  inFlightRadius = null
   own.set(null)
   responders.set([])
   nearbyRadius.set(NEARBY_RADIUS_M)

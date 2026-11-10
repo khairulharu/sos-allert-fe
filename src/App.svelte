@@ -386,6 +386,11 @@
   let fixUnsub = null
   let lastPublished = null
   let lastPublishedAt = 0
+  // Bumped whenever the session's location pipeline is torn down. A heartbeat
+  // that was already awaiting a browser fix or a PUT checks this after every
+  // await, so a tick that started before sign-out cannot publish (or re-read
+  // the nearby list) with the token already gone.
+  let locationSession = 0
 
   // Current position: the live watch first, the stored heartbeat as a starting
   // value. Null when neither exists — no made-up city is published or sent
@@ -401,16 +406,30 @@
 
   // One shared browser fix (src/lib/geo.js) feeds the heartbeat, the map, and
   // the SOS trigger, so the writers can never publish different buckets.
+  // True while this heartbeat still belongs to the live session. The token
+  // identity (not just its presence) is what stops a teardown from reviving a
+  // session another tab has logged in with in the meantime.
+  function heartbeatCurrent(epoch, token) {
+    return epoch === locationSession && !!token && getSessionToken() === token
+  }
+
   async function publishHeartbeat() {
     // Profile → "Live location". With sharing off nothing is published, so the
     // account drops out of nearby lists as soon as last_seen goes stale.
     if (!get(locationSharing)) return
+    const epoch = locationSession
+    const token = getSessionToken()
+    if (!token) return
     const pos = await browserPosition()
+    if (!heartbeatCurrent(epoch, token)) return
     // No fresh fix: keep the previous heartbeat instead of republishing an old
     // coordinate as current. The backend then ages it out on its own.
     if (!pos) return
     try {
       await locationApi.update(pos.lat, pos.lng)
+      // Sign-out may have run while the PUT was in flight: nothing below is
+      // allowed to touch the network or the nearby stores any more.
+      if (!heartbeatCurrent(epoch, token)) return
       lastPublished = pos
       lastPublishedAt = Date.now()
       // Our own freshness is what makes this device visible to the others, so
@@ -460,6 +479,9 @@
   }
 
   function stopLocationHeartbeat() {
+    // Invalidate any publishHeartbeat() already past its first await before the
+    // listeners go: detaching them does not cancel the promise it is holding.
+    locationSession++
     clearInterval(heartbeatTimer)
     heartbeatTimer = null
     fixUnsub?.()
@@ -510,12 +532,15 @@
 
   async function onSignOut() {
     authNotice = ''
-    // The server-side delete needs a valid token, and logout() revokes it.
-    await disablePush()
+    // Stop every producer before the first await: disablePush() talks to the
+    // network and would otherwise leave a window where a heartbeat tick or a
+    // position callback starts a request that only lands after logout().
     stopInboxPolling()
     stopNearbyPolling()
     stopLocationHeartbeat()
     stopTracking()
+    // The server-side deletes need a valid token, and logout() revokes it.
+    await disablePush()
     await logout()
     currentUser = null
     tab = 'home'
@@ -531,11 +556,11 @@
     authNotice = 'Your session ended — sign in again to keep getting SOS alerts.'
     // The token is already dead, so the DELETE 401s and the subscription is
     // cleaned up by the backend once the push service reports it gone (410).
-    await disablePush()
     stopInboxPolling()
     stopNearbyPolling()
     stopLocationHeartbeat()
     stopTracking()
+    await disablePush()
     await logout()
     currentUser = null
   }

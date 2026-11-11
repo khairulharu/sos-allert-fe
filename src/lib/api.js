@@ -48,7 +48,9 @@ function parseRetryAfter(value) {
   return null
 }
 
-async function request(method, path, body, { token = true, raw = false, headers } = {}) {
+// `envelope: true` returns the whole parsed body (`data` + `paging`) instead of
+// just `data`. The body is read exactly once, here.
+async function request(method, path, body, { token = true, envelope = false, headers } = {}) {
   headers = headers || {}
   headers.Accept = 'application/json'
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
@@ -90,13 +92,12 @@ async function request(method, path, body, { token = true, raw = false, headers 
     err.retryAfter = parseRetryAfter(resp.headers.get('Retry-After'))
     throw err
   }
-  return raw ? resp : payload?.data
+  return envelope ? payload : payload?.data
 }
 
 // Same request pipeline, but keeps the `paging` block that `request()` drops.
 async function requestPaged(path) {
-  const resp = await request('GET', path, undefined, { raw: true })
-  const payload = await resp.json().catch(() => null)
+  const payload = await request('GET', path, undefined, { envelope: true })
   return { items: payload?.data ?? [], paging: payload?.paging ?? null }
 }
 

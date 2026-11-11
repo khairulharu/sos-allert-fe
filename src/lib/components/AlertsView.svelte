@@ -2,18 +2,21 @@
   import { onMount } from 'svelte'
   import { ArrowUpRight, Radio, BadgeCheck, Info, Loader } from '@lucide/svelte'
   import { sos } from '$lib/api.js'
-  import { session } from '$lib/stores.js'
-  import { emergencyLabel, severityWord } from '$lib/alertMeta.js'
+  import { emergencyLabel, severityWord, timeAgo } from '$lib/alertMeta.js'
 
-  let tab = $state('all')
-  let loading = $state(true)
-  let error = $state('')
-  let alerts = $state([])
+  const PAGE_SIZE = 20
 
+  // `All` is gone on purpose: "every alert" is not one paged query, and merging
+  // two pages would make `paging` lie. Each tab is one `role`.
   const tabs = [
-    { id: 'all', label: 'All' },
     { id: 'sent', label: 'Sent' },
     { id: 'received', label: 'Received' },
+  ]
+
+  const statusFilters = [
+    { id: 'all', label: 'All' },
+    { id: 'active', label: 'Active' },
+    { id: 'closed', label: 'Closed' },
   ]
 
   const statusTone = {
@@ -21,6 +24,7 @@
     ACKNOWLEDGED: 'bg-[#EAF0FF] text-[#2F5BD0]',
     RESOLVED: 'bg-[#E9F7F1] text-[#087a54]',
     CANCELLED: 'bg-[#F2F3F5] text-muted',
+    EXPIRED: 'bg-[#F2F3F5] text-muted',
   }
 
   const statusLabel = {
@@ -28,43 +32,108 @@
     ACKNOWLEDGED: 'Acknowledged',
     RESOLVED: 'Resolved',
     CANCELLED: 'Cancelled',
+    EXPIRED: 'Expired',
   }
 
-  const filtered = $derived(
-    tab === 'all' ? alerts : alerts.filter((item) => item.type === tab),
-  )
+  const EMPTY_COPY = {
+    sent: 'No alerts sent yet',
+    received: 'No alerts received yet',
+  }
+
+  const EMPTY_HINT = {
+    sent: 'SOS alerts you trigger will show up here.',
+    received: 'Alerts pushed to you nearby will show up here.',
+  }
+
+  let role = $state('sent')
+  let statusFilter = $state('all')
+  let items = $state([])
+  let page = $state(1)
+  let totalPage = $state(1)
+  let totalItem = $state(0)
+  let loading = $state(true)
+  let loadingMore = $state(false)
+  let error = $state('')
+  let summary = $state(null)
+  let summaryError = $state(false)
+
+  // Last response wins only if it still belongs to the current tab/filter.
+  let seq = 0
+
+  async function load({ append = false } = {}) {
+    const my = ++seq
+    const nextPage = append ? page + 1 : 1
+    if (append) loadingMore = true
+    else {
+      loading = true
+      items = []
+    }
+    error = ''
+    try {
+      const { items: rows, paging } = await sos.history({
+        role,
+        status: statusFilter === 'all' ? '' : statusFilter,
+        page: nextPage,
+        size: PAGE_SIZE,
+      })
+      if (my !== seq) return
+      const fresh = (rows || []).map(normalize)
+      items = append ? [...items, ...fresh] : fresh
+      page = Number(paging?.page) || nextPage
+      totalPage = Number(paging?.total_page) || 1
+      totalItem = Number(paging?.total_item) || items.length
+    } catch (e) {
+      if (my !== seq) return
+      error = e?.message || 'Failed to load alerts'
+    } finally {
+      if (my === seq) {
+        loading = false
+        loadingMore = false
+      }
+    }
+  }
+
+  async function loadSummary() {
+    summaryError = false
+    try {
+      summary = await sos.summary()
+    } catch {
+      summary = null
+      summaryError = true
+    }
+  }
+
+  onMount(() => {
+    load()
+    loadSummary()
+  })
+
+  function chooseRole(next) {
+    if (next === role) return
+    role = next
+    page = 1
+    load()
+  }
+
+  function chooseStatus(next) {
+    if (next === statusFilter) return
+    statusFilter = next
+    load()
+  }
 
   const groups = $derived(
-    filtered.reduce((acc, item) => {
+    items.reduce((acc, item) => {
       acc[item.dateLabel] = acc[item.dateLabel] ?? []
       acc[item.dateLabel].push(item)
       return acc
     }, {}),
   )
 
-  const sentCount = $derived(alerts.filter((a) => a.type === 'sent').length)
-  const helpedCount = $derived(alerts.filter((a) => a.statusKey === 'RESOLVED').length)
+  const remaining = $derived(Math.max(0, totalItem - items.length))
 
-  async function load() {
-    loading = true
-    error = ''
-    try {
-      const [active, inbox] = await Promise.all([
-        sos.active().catch(() => []),
-        sos.inbox().catch(() => []),
-      ])
-      const seen = new Set()
-      alerts = [...(active || []), ...(inbox || [])]
-        .filter((a) => (a && a.alert_id && !seen.has(a.alert_id) ? (seen.add(a.alert_id), true) : false))
-        .map(normalize)
-    } catch (e) {
-      error = e?.message || 'Failed to load alerts'
-    } finally {
-      loading = false
-    }
-  }
-
-  onMount(load)
+  const sentTotal = $derived(summary ? (summary.sent?.total ?? 0) : null)
+  const resolvedAnswered = $derived(summary ? (summary.responded?.resolved ?? 0) : null)
+  const incomingActive = $derived(summary ? (summary.received?.active ?? 0) : null)
 
   function placeLabel(point) {
     if (!point) return '—'
@@ -76,9 +145,14 @@
       : '—'
   }
 
+  function endedLabel(status, alert) {
+    if (status === 'RESOLVED' && alert.resolved_at) return `resolved ${timeAgo(alert.resolved_at)}`
+    if (status === 'CANCELLED' && alert.cancelled_at) return `cancelled ${timeAgo(alert.cancelled_at)}`
+    // EXPIRED carries no timestamp of its own; the trigger time is all we have.
+    return ''
+  }
+
   function normalize(a) {
-    const isSelf = a.sender?.id === $session?.user?.id
-    const type = isSelf ? 'sent' : 'received'
     const t = a.triggered_at ? new Date(a.triggered_at) : null
     const today = new Date()
     const dateLabel = t
@@ -93,7 +167,6 @@
     const severity = severityWord(a.severity)
     return {
       ...a,
-      type,
       dateLabel,
       time,
       severity,
@@ -104,6 +177,7 @@
       statusKey: a.status,
       status: statusLabel[a.status] || a.status,
       meta: severity ? `${emergency} · ${severity}` : emergency,
+      ended: endedLabel(a.status, a),
     }
   }
 </script>
@@ -120,33 +194,59 @@
   <section class="mt-5 grid grid-cols-3 gap-2.5">
     <div class="card rounded-[20px] p-3.5">
       <p class="eyebrow">All time</p>
-      <p class="mt-1.5 text-[21px] font-semibold tracking-tight">{sentCount}</p>
+      <p class="mt-1.5 text-[21px] font-semibold tracking-tight">{sentTotal ?? '—'}</p>
       <p class="text-[12px] text-muted">alerts sent</p>
     </div>
     <div class="card rounded-[20px] p-3.5">
-      <p class="eyebrow">Helped</p>
-      <p class="mt-1.5 text-[21px] font-semibold tracking-tight text-safe">{helpedCount}</p>
-      <p class="text-[12px] text-muted">resolved alerts</p>
+      <p class="eyebrow">Resolved</p>
+      <p class="mt-1.5 text-[21px] font-semibold tracking-tight text-safe">{resolvedAnswered ?? '—'}</p>
+      <p class="text-[12px] text-muted">you answered</p>
     </div>
     <div class="card rounded-[20px] p-3.5">
-      <p class="eyebrow">Active</p>
-      <p class="mt-1.5 text-[21px] font-semibold tracking-tight">{alerts.filter((a) => a.type === 'received' && a.statusKey === 'TRIGGERED').length}</p>
-      <p class="text-[12px] text-muted">nearby alerts</p>
+      <p class="eyebrow">Incoming</p>
+      <p class="mt-1.5 text-[21px] font-semibold tracking-tight">{incomingActive ?? '—'}</p>
+      <p class="text-[12px] text-muted">active now</p>
     </div>
   </section>
+
+  {#if summaryError}
+    <button
+      type="button"
+      onclick={loadSummary}
+      class="mt-2 w-full rounded-[14px] px-3 py-2 text-left text-[12px] font-medium text-muted underline-offset-2 hover:underline"
+    >
+      Couldn't load totals · Retry
+    </button>
+  {/if}
 
   <!-- tabs -->
   <div class="mt-5 flex rounded-full bg-[#ECEEF1] p-1">
     {#each tabs as item}
       <button
         type="button"
-        onclick={() => (tab = item.id)}
-        aria-pressed={tab === item.id}
-        class="flex-1 rounded-full py-2 text-[13px] font-semibold transition {tab === item.id
+        onclick={() => chooseRole(item.id)}
+        aria-pressed={role === item.id}
+        class="flex-1 rounded-full py-2 text-[13px] font-semibold transition {role === item.id
           ? 'bg-white text-ink shadow-sm'
           : 'text-muted hover:text-ink'}"
       >
         {item.label}
+      </button>
+    {/each}
+  </div>
+
+  <!-- status filter -->
+  <div class="mt-2.5 flex items-center gap-2">
+    {#each statusFilters as filter}
+      <button
+        type="button"
+        onclick={() => chooseStatus(filter.id)}
+        aria-pressed={statusFilter === filter.id}
+        class="rounded-full px-3 py-1 text-[12px] font-semibold transition {statusFilter === filter.id
+          ? 'bg-ink text-white'
+          : 'bg-white/70 text-muted ring-1 ring-black/[0.04] hover:text-ink'}"
+      >
+        {filter.label}
       </button>
     {/each}
   </div>
@@ -156,40 +256,46 @@
       <Loader size={15} class="animate-spin" />
       Loading alerts…
     </div>
-  {:else if error}
+  {:else if error && items.length === 0}
     <div class="card mt-5 px-4 py-10 text-center" role="alert">
       <p class="text-[13.5px] font-semibold text-ink">Couldn't load alerts</p>
       <p class="mt-1 text-[12.5px] text-muted">{error}</p>
       <button
         type="button"
-        onclick={load}
+        onclick={() => load()}
         class="mt-3 rounded-full bg-white px-4 py-2 text-[13px] font-semibold text-ink ring-1 ring-black/5 transition hover:bg-[#FAFBFC] active:scale-[0.98]"
       >
         Retry
       </button>
     </div>
-  {:else if Object.keys(groups).length === 0}
+  {:else if items.length === 0}
     <div class="card mt-5 px-4 py-10 text-center">
-      <p class="text-[13.5px] font-semibold text-ink">No alerts yet</p>
-      <p class="mt-1 text-[12.5px] text-muted">SOS alerts will show up here.</p>
+      <p class="text-[13.5px] font-semibold text-ink">
+        {statusFilter === 'all'
+          ? EMPTY_COPY[role]
+          : `No ${statusFilter} alerts in ${role === 'sent' ? 'sent' : 'received'}`}
+      </p>
+      <p class="mt-1 text-[12.5px] text-muted">
+        {statusFilter === 'all' ? EMPTY_HINT[role] : 'Try another filter.'}
+      </p>
     </div>
   {:else}
-    {#each Object.entries(groups) as [label, items]}
+    {#each Object.entries(groups) as [label, group]}
       <section class="mt-6">
         <div class="flex items-center justify-between px-0.5">
           <h2 class="eyebrow text-ink/60">{label}</h2>
-          <span class="text-[12px] font-medium text-muted">{items.length} alert{items.length > 1 ? 's' : ''}</span>
+          <span class="text-[12px] font-medium text-muted">{group.length} alert{group.length > 1 ? 's' : ''}</span>
         </div>
 
         <div class="card mt-2.5 divide-y divide-line/80 overflow-hidden">
-          {#each items as item}
+          {#each group as item (item.alert_id)}
             <div class="flex items-start gap-3 px-4 py-4">
               <span
-                class="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-2xl {item.type === 'sent'
+                class="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-2xl {role === 'sent'
                   ? 'bg-[#FFECEB] text-sos'
                   : 'bg-[#E9F7F1] text-safe'}"
               >
-                {#if item.type === 'sent'}
+                {#if role === 'sent'}
                   <ArrowUpRight size={17} strokeWidth={2.3} />
                 {:else}
                   <Radio size={17} strokeWidth={2.1} />
@@ -206,13 +312,16 @@
                   {/if}
                 </span>
                 <span class="mt-1 block truncate text-[12.5px] text-muted">
-                  {item.sender?.name ? `${item.sender.name} · ` : ''}{item.meta}
+                  {role === 'received' && item.sender?.name ? `${item.sender.name} · ` : ''}{item.meta}
                 </span>
-                <span class="mt-2 flex items-center gap-2">
-                  <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold {statusTone[item.statusKey]}"
+                <span class="mt-2 flex flex-wrap items-center gap-2">
+                  <span class="rounded-full px-2 py-0.5 text-[11px] font-semibold {statusTone[item.statusKey] || statusTone.CANCELLED}"
                     >{item.status}</span
                   >
                   <span class="text-[12px] text-muted">{item.time} · {item.place}</span>
+                  {#if item.ended}
+                    <span class="text-[12px] text-muted">· {item.ended}</span>
+                  {/if}
                 </span>
               </span>
             </div>
@@ -220,13 +329,32 @@
         </div>
       </section>
     {/each}
+
+    {#if error}
+      <p class="mt-4 text-center text-[12.5px] text-sos" role="alert">{error}</p>
+    {/if}
+
+    {#if page < totalPage}
+      <button
+        type="button"
+        onclick={() => load({ append: true })}
+        disabled={loadingMore}
+        aria-busy={loadingMore}
+        class="mt-5 flex w-full items-center justify-center gap-2 rounded-full bg-white px-4 py-3 text-[13px] font-semibold text-ink ring-1 ring-black/5 transition hover:bg-[#FAFBFC] active:scale-[0.99] disabled:opacity-60"
+      >
+        {#if loadingMore}
+          <Loader size={14} class="animate-spin" /> Loading…
+        {:else}
+          Load more{remaining > 0 ? ` · ${remaining} left` : ''}
+        {/if}
+      </button>
+    {/if}
   {/if}
 
   <div class="mt-6 flex items-start gap-2.5 rounded-[18px] bg-white/60 p-3.5 ring-1 ring-black/[0.03]">
     <Info size={14} class="mt-0.5 shrink-0 text-muted" />
     <p class="text-[12px] leading-relaxed text-muted">
-      Alerts you trigger or respond to appear here. Other people's locations are approximate until
-      you respond.
+      Alerts are kept on the server. Other people's locations stay approximate until you respond.
     </p>
   </div>
 </div>

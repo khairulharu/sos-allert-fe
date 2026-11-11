@@ -54,12 +54,16 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: the responder list (`AlertDetailResponse.responders`,
-  `ResponderSummary`) and the `RESPONDER_ADDED` frame, at backend commit
-  `6824363`.
+  workspace. Last re-copy: alert history + summary (`GET /api/sos/history`
+  with `SearchAlertHistory` query params and `paging`, `GET /api/sos/summary`,
+  `AlertStatusCounts`, `AlertRespondedCounts`, `AlertSummaryResponse`) from
+  backend `ef73bec` plus the uncommitted alert-history working tree. Previous
+  re-copy: the responder list (`AlertDetailResponse.responders`,
+  `ResponderSummary`) and the `RESPONDER_ADDED` frame at `6824363`.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
-- Success envelope: `{ "data": ... }`; contact list also has `{ "paging": ... }`.
+- Success envelope: `{ "data": ... }`; contact list and alert history also have
+  `{ "paging": ... }`.
 - Error envelope: `{ "errors": "<message>" }` with the HTTP status.
 - All timestamps are epoch milliseconds (`int64`).
 - CORS is origin-locked to `https://allert.my.id` and `http://localhost:5173`
@@ -129,7 +133,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   the same field to `/api/sos/classify` (pre-trigger classification, thrown
   errors carry `status` so the caller can fall back on `503`/`502`). The `push`
   module wraps the four Web Push routes (`publicKey`, `subscribe`, `unsubscribe`,
-  `list`).
+  `list`). `sos.history({role,status,page,size})` goes through the `requestPaged`
+  helper because `request()` returns only `payload.data` and would drop
+  `paging`; `sos.summary()` wraps `GET /api/sos/summary`.
 - `src/lib/push.js` — browser Web Push registration (mirrors the grant-only
   style of `mic.js`). `pushBlockReason()` reports `insecure`/`unsupported`
   first, `pushPermissionState()` maps `Notification.permission`, and
@@ -377,7 +383,15 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   "Audio received · responders can listen to your 10 s clip", the upload error,
   or "No audio was attached" when the microphone was blocked). The clip is
   dropped when the alert ends or the sheet closes.
-- `src/lib/components/AlertsView.svelte` — active + inbox merge/dedupe.
+- `src/lib/components/AlertsView.svelte` — server-side history. Two tabs only
+  (`Sent` / `Received`, `role` query): `GET /api/sos/history` with the status
+  chip (`all`/`active`/`closed`), 20-row pages and a "Load more" button. Each
+  load carries a sequence guard so a slow response for the previous tab cannot
+  overwrite the current one, and terminal rows show `resolved_at`/
+  `cancelled_at` (`EXPIRED` has no timestamp, so it shows the trigger time). The
+  three summary cards come from `GET /api/sos/summary` (`sent.total`,
+  `responded.resolved`, `received.active`) and render `—` until it answers.
+  Never derive totals from `active`/`inbox`: both are active-only.
 - `src/lib/components/ContactsView.svelte` — emergency contacts.
 - `src/lib/components/ProfileView.svelte` — profile + real settings. No mock
   identity and no fabricated numbers: `user` defaults to `{}`, the two stats are

@@ -93,6 +93,13 @@ async function request(method, path, body, { token = true, raw = false, headers 
   return raw ? resp : payload?.data
 }
 
+// Same request pipeline, but keeps the `paging` block that `request()` drops.
+async function requestPaged(path) {
+  const resp = await request('GET', path, undefined, { raw: true })
+  const payload = await resp.json().catch(() => null)
+  return { items: payload?.data ?? [], paging: payload?.paging ?? null }
+}
+
 // ---- Auth ----
 export const auth = {
   register: (id, password, name) =>
@@ -135,6 +142,14 @@ export const sos = {
   },
   active: () => request('GET', '/api/sos/active'),
   inbox: () => request('GET', '/api/sos/inbox'),
+  // Server-side history (all statuses, paged). `active`/`inbox` are active-only
+  // and must not be used to derive totals. See docs/SPEC-alerts-history.md.
+  history: ({ role = 'sent', status = '', page = 1, size = 20 } = {}) => {
+    const query = new URLSearchParams({ role, page: String(page), size: String(size) })
+    if (status) query.set('status', status)
+    return requestPaged(`/api/sos/history?${query.toString()}`)
+  },
+  summary: () => request('GET', '/api/sos/summary'),
   get: (alertId) => request('GET', `/api/sos/${alertId}`),
   cancel: (alertId, pin, reason) =>
     request('POST', `/api/sos/${alertId}/cancel`, { pin, reason }),

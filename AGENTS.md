@@ -68,7 +68,8 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   header `Authorization` (tidak bisa langsung jadi `<audio src>`), tidak ada
   event WS `MEDIA_ADDED`, `AlertDetailResponse` tidak memuat media, dan akses
   dibatasi sender + responder yang sudah `POST .../respond`. Player media untuk
-  responder belum ada di `src/`.
+  responder sudah diimplementasi (`src/lib/components/AlertMedia.svelte`, lihat
+  bagian "Important files").
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list and alert history also have
@@ -110,6 +111,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   as the pre-trigger classification lands — and a `503`/`502` from classify falls
   back to that description triage. A blocked microphone does not stop the SOS —
   the countdown says "Sending without audio" and the description triage stands.
+  On the other side of that clip, the responder sheet now actually plays it
+  (`AlertMedia.svelte`: `GET /api/sos/:id/media` polled, the stream fetched with
+  the token into an object URL, transcript alongside — see "Important files").
   **Browser Web
   Push is wired**: the Profile toggle registers `/sw.js` + a VAPID subscription
   with `POST /api/push/subscriptions`, `App.svelte` re-syncs it on
@@ -127,7 +131,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
     backend needs a `safe_pin` the app never sets, so `PATCH /api/users/_current`
     (Profile) has to come first; today the only way to close an alert is
     `resolve` (`RESOLVED`);
-  - video capture and in-app playback/download of media;
+  - video capture, video/audio download, dan playback media di luar sheet
+    responder (`GET /api/sos/{alertId}/media` sudah terbaca, tapi hanya
+    `AlertMedia.svelte` yang memakainya — sender masih sekadar melihat receipt);
   - native push device tokens (FCM/APNs via `fcm_token`/`apns_token`) — browser
     Web Push covers the browser demo, and inbox polling stays as the in-app
     fallback.
@@ -144,7 +150,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   module wraps the four Web Push routes (`publicKey`, `subscribe`, `unsubscribe`,
   `list`). `sos.history({role,status,page,size})` goes through the `requestPaged`
   helper because `request()` returns only `payload.data` and would drop
-  `paging`; `sos.summary()` wraps `GET /api/sos/summary`.
+  `paging`; `sos.summary()` wraps `GET /api/sos/summary`. `sos.listMedia(alertId)`
+  reads `GET /api/sos/:id/media` and `sos.mediaBlob(alertId, mediaId)` returns a
+  Blob for the stream endpoint — it goes through `requestBlob()` because the
+  route needs the raw `Authorization` header and cannot be an `<audio src>`;
+  errors still carry `status` (`403` non-participant, `404`, `412` storage).
 - `src/lib/push.js` — browser Web Push registration (mirrors the grant-only
   style of `mic.js`). `pushBlockReason()` reports `insecure`/`unsupported`
   first, `pushPermissionState()` maps `Notification.permission`, and
@@ -344,8 +354,27 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   response) plus every other responder appended by `RESPONDER_ADDED` on this
   channel, nearest first and with the caller filtered out by `youId` — their own
   socket connects after `POST /respond`, so their own frame never arrives and
-  would otherwise duplicate the row. The app drops the sheet once the alert
+  would otherwise duplicate the row. Once the viewer has responded the sheet
+  also renders `<AlertMedia>` (the sender's clip, gated on `responded` because
+  the media routes are participant-only). The app drops the sheet once the alert
   reaches a terminal status.
+- `src/lib/components/AlertMedia.svelte` — the responder's evidence player
+  (`alertId` + `enabled`). Three backend facts drive it: the stream endpoint
+  needs the raw `Authorization` header, so each clip is fetched with
+  `sos.mediaBlob()` into an object URL (`<audio>`/`<video>` cannot carry the
+  header); there is no `MEDIA_ADDED` frame and `AlertDetailResponse` has no media,
+  so it polls `GET /api/sos/:id/media` every 12 s while the sheet is open
+  (skipping ticks on a hidden tab, catching up on `visibilitychange`); and only a
+  recorded responder may read media, so it stays inert until `enabled`. Blobs are
+  cached per media id for the life of the sheet and every object URL is revoked
+  on close/switch (a `generation` counter drops late responses and late blob
+  writes for the previous alert). Each row shows the clip type, size and age, a
+  native `controls` player, and the server's transcript — or the
+  `transcription_status` reason (`disabled`/`too_large`/`empty`/`failed`) when
+  there is none. `403` is treated as "not a participant yet" and 412/404 are
+  permanent (no retry), other failures are retried on the next poll. The section
+  renders at all only when a clip exists, so an alert with a blocked microphone
+  adds nothing to the sheet.
 - `src/lib/components/AlertFlow.svelte` — describe → 10 s countdown → classify →
   trigger → triage → resolve. The countdown is two things at once. It is the
   cancel window: the alert is only POSTed when it runs out, so "Cancel alert" and
@@ -686,3 +715,10 @@ followed it. Regressions here were what the review called out, so keep them.
 
 No frontend test suite. Run `npm run build` and verify the actual UI in a
 browser at `http://localhost:5173` with the backend running.
+
+Two behaviours are covered by browser regression scripts (real Vite dev server,
+headless Chrome, a mock API on :3000 from `scripts/`): `npm run test:signout`,
+`npm run test:radius`, and `npm run test:media` — the last one opens the
+responder sheet via `/?alert=<id>`, asserts no media request before
+`POST /respond`, then that the list and the stream both carry the raw token and
+the clip plays from a `blob:` object URL.

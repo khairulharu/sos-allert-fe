@@ -49,3 +49,6 @@ jobs:
 
       - name: Regression — sign-out request (issue #6)
         run: npm run test:signout
+
+      - name: Regression — responder media player
+        run: npm run test:media

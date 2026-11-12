@@ -11,6 +11,7 @@
     Loader2,
   } from '@lucide/svelte'
   import MapCard from './MapCard.svelte'
+  import AlertMedia from './AlertMedia.svelte'
   import { trap } from '$lib/focus.js'
   import {
     emergencyLabel,
@@ -184,6 +185,12 @@
             <p class="mt-0.5 text-[12px] font-semibold text-ink">{detail.value}</p>
           </div>
         {/each}
+      </div>
+
+      <!-- Only a recorded responder can read the media (403 otherwise), so the
+           player appears once this viewer has pressed "I'm coming". -->
+      <div class="mt-3.5">
+        <AlertMedia alertId={alert?.alert_id} enabled={!!responded} />
       </div>
 
       {#if onTheWayCount > 0}

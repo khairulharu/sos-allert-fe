@@ -95,6 +95,42 @@ async function request(method, path, body, { token = true, envelope = false, hea
   return envelope ? payload : payload?.data
 }
 
+// Binary responses (incident media) carry the same raw-token auth as JSON, so
+// they cannot be used as an `<audio src>` / `<video src>`: the caller gets a
+// Blob here and plays a `URL.createObjectURL()` it revokes itself.
+async function requestBlob(path) {
+  const headers = {}
+  const t = getToken()
+  if (t) headers.Authorization = t
+
+  let resp
+  try {
+    resp = await fetch(API_BASE + path, { headers })
+  } catch (err) {
+    const e = new Error(`Network error — is the backend running at ${API_BASE}?`)
+    e.cause = err
+    throw e
+  }
+
+  if (!resp.ok) {
+    let payload = null
+    try {
+      payload = await resp.json()
+    } catch {
+      /* some errors (e.g. 412) have no JSON body */
+    }
+    const detail =
+      (payload && (payload.errors || payload.message)) ||
+      (Array.isArray(payload?.errors) ? payload.errors.join(', ') : '') ||
+      `HTTP ${resp.status}`
+    const err = new Error(detail)
+    err.status = resp.status
+    err.payload = payload
+    throw err
+  }
+  return resp.blob()
+}
+
 // Same request pipeline, but keeps the `paging` block that `request()` drops.
 async function requestPaged(path) {
   const payload = await request('GET', path, undefined, { envelope: true })
@@ -163,6 +199,17 @@ export const sos = {
     form.append('file', blob, filename)
     return request('POST', `/api/sos/${encodeURIComponent(alertId)}/media`, form)
   },
+  // Incident media, readable by the sender and by anyone recorded in
+  // `alert_responses` (i.e. after POST .../respond — everyone else gets 403).
+  // There is no MEDIA_ADDED frame and AlertDetailResponse carries no media, so
+  // a viewer that wants to know about new evidence has to poll this list.
+  listMedia: (alertId) => request('GET', `/api/sos/${encodeURIComponent(alertId)}/media`),
+  // The stream endpoint only answers with the Authorization header, so this
+  // returns a Blob, not a playable URL. Revoke the object URL you build.
+  mediaBlob: (alertId, mediaId) =>
+    requestBlob(
+      `/api/sos/${encodeURIComponent(alertId)}/media/${encodeURIComponent(mediaId)}`,
+    ),
 }
 
 // ---- Emergency contacts ----

@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:signout": "node scripts/test-signout-401.mjs",
-    "test:radius": "node scripts/test-radius-toggle.mjs"
+    "test:radius": "node scripts/test-radius-toggle.mjs",
+    "test:media": "node scripts/test-media-player.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

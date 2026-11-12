@@ -60,6 +60,15 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   backend `ef73bec` plus the uncommitted alert-history working tree. Previous
   re-copy: the responder list (`AlertDetailResponse.responders`,
   `ResponderSummary`) and the `RESPONDER_ADDED` frame at `6824363`.
+- Handoff backend (perubahan kontrak dan yang belum diimplementasi):
+  `docs/api-changes.md`, mirror dari `../backend/docs/api-changes.md` — jangan
+  diedit di repo ini. Bagian "Media insiden (audio/video)" mencatat endpoint
+  media yang sudah siap dipakai responder (`GET /api/sos/{alertId}/media`,
+  `GET /api/sos/{alertId}/media/{mediaId}`) beserta gotcha-nya: endpoint butuh
+  header `Authorization` (tidak bisa langsung jadi `<audio src>`), tidak ada
+  event WS `MEDIA_ADDED`, `AlertDetailResponse` tidak memuat media, dan akses
+  dibatasi sender + responder yang sudah `POST .../respond`. Player media untuk
+  responder belum ada di `src/`.
 - Auth header: raw session token, **no `Bearer ` prefix**.
   `POST /api/users/_login` returns `data.token`.
 - Success envelope: `{ "data": ... }`; contact list and alert history also have

@@ -54,12 +54,17 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: alert history + summary (`GET /api/sos/history`
-  with `SearchAlertHistory` query params and `paging`, `GET /api/sos/summary`,
-  `AlertStatusCounts`, `AlertRespondedCounts`, `AlertSummaryResponse`) from
-  backend `ef73bec` plus the uncommitted alert-history working tree. Previous
-  re-copy: the responder list (`AlertDetailResponse.responders`,
-  `ResponderSummary`) and the `RESPONDER_ADDED` frame at `6824363`.
+  workspace. Last re-copy: pentest fixes F-1/F-2/F-3/F-4 — `nearby`
+  `distance_m` rounded to a 100 m bucket (`NearbyResponder.distance_m`) and the
+  participant gate on `GET /api/sos/{alertId}`, `.../acknowledge`, `.../respond`
+  (`404`/`403` for non-participants, `AlertDetailResponse.responders[]` only for
+  participants) from backend `45f2219`. Previous re-copy: alert history +
+  summary (`GET /api/sos/history` with `SearchAlertHistory` query params and
+  `paging`, `GET /api/sos/summary`, `AlertStatusCounts`,
+  `AlertRespondedCounts`, `AlertSummaryResponse`) from backend `ef73bec` plus
+  the uncommitted alert-history working tree. Previous re-copy: the responder
+  list (`AlertDetailResponse.responders`, `ResponderSummary`) and the
+  `RESPONDER_ADDED` frame at `6824363`.
 - Handoff backend (perubahan kontrak dan yang belum diimplementasi):
   `docs/api-changes.md`, mirror dari `../backend/docs/api-changes.md` — jangan
   diedit di repo ini. Bagian "Media insiden (audio/video)" mencatat endpoint

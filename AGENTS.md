@@ -777,3 +777,13 @@ the clip plays from a `blob:` object URL; `test:ws` runs a hand-rolled
 WebSocket server and asserts the tracking contract (no `?token=` in the upgrade
 URL, `{type:"auth"}` as frame #1, breadcrumbs queued until `auth_ok`, no socket
 at all without a token).
+
+## T3 Code orchestrator (delegation protocol)
+
+- The parent thread is the orchestrator: it plans and delegates; it implements only trivial fixes (a few lines, one file).
+- `delegate_task` children always run inside THIS repo's project — frontend work only.
+- Backend work crosses repos: use `t3_thread_launch` with the backend project's `projectId` (`../backend`), then follow it with `t3_thread_wait` / `t3_thread_read`. Never edit backend files from here; handoffs land in backend `docs/api-changes.md` (mirrored to this repo's `docs/api-changes.md`, read-only).
+- Children get ONLY the task prompt — spell out file paths, contract details, and what "done" means. They still read this file.
+- Same-file parallel work gets `isolation: "worktree"` per child; clearly disjoint or read-only work can share the checkout.
+- Every new review round is a fresh `delegate_task` / `t3_thread_launch` with the original brief + prior findings + unresolved objections. Small review findings: fix them yourself, don't spawn a child.
+- Before reporting done: `npm run build` passes, and the contract mirror `api/api-spec.json` + `api/api.md` still matches `../backend/api/` (backend copy is the source of truth — re-copy it, never hand-edit the mirror).

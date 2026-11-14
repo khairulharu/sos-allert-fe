@@ -57,10 +57,18 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: pentest F-8 — WebSocket first-frame auth (`auth` /
-  `auth_ok`, 10 s deadline, `?token=` ignored) and Redis sessions with
-  `auth.token_ttl_hours` (168 h), from backend `4238b5b` (docs mirror only; the
-  `api/` mirror was already identical). Previous re-copy: pentest fixes
+  workspace. Last re-copy: pentest F-6/F-7/F-9/F-11/F-12 — `POST /api/sos`
+  now takes `client_severity`/`client_summary` (a labelled claim, never the
+  triage; the server triage comes from `POST /api/sos/classify`, valid 2 min and
+  single use, or from `description`), `/api/sos/classify` is throttled
+  (`429`/`503`), `POST /api/push/subscriptions` rejects endpoints outside the
+  push-service allowlist (`400`), API responses carry nosniff/frame headers and
+  media downloads are `attachment` with an allowlisted `Content-Type`, from
+  backend `d931206`. Read `docs/api-changes.md` → "Triage hanya dari server"
+  before touching the trigger flow. Previous re-copy: pentest F-8 — WebSocket
+  first-frame auth (`auth`/`auth_ok`, 10 s deadline, `?token=` ignored) and
+  Redis sessions with `auth.token_ttl_hours` (168 h), from backend `4238b5b`
+  (docs mirror only; the `api/` mirror was already identical). Previous re-copy: pentest fixes
   F-1/F-2/F-3/F-4 — `nearby`
   `distance_m` rounded to a 100 m bucket (`NearbyResponder.distance_m`) and the
   participant gate on `GET /api/sos/{alertId}`, `.../acknowledge`, `.../respond`

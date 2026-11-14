@@ -62,14 +62,19 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 
 ## Status copy
 
-- `api/api.md` + `api/api-spec.json` diperbarui di backend.
-- Sudah disalin ke `../frontend/api/` (hash sama per saat handoff ini).
+- Re-copy terakhir: pentest F-6/F-7/F-9/F-11/F-12 (klaim client vs triage
+  server, rate limit `classify`, allowlist endpoint push, recover + security
+  headers, media download) dari backend `d931206`.
+- `api/api.md` + `api/api-spec.json` diperbarui di backend untuk keempat
+  perubahan itu (`TriggerSOSRequest.client_*`, `SOSCreatedResponse.client_*`,
+  `SOSCreatedResponse.triage`, `classify` 429/503, `push/subscriptions` 400,
+  media `attachment` + allowlist Content-Type).
+- Sudah disalin ke `../frontend/api/` — `md5sum` keempat file sama per saat
+  handoff ini.
 - Baris "Last re-copy" di `../frontend/AGENTS.md` sudah diperbarui.
-- `backend/api/api.md` + `api-spec.json` tidak berubah untuk bagian media (sudah
-  memuat ketiga endpoint); mirror-nya di `../frontend/api/` masih identik.
 - Dokumen ini juga di-mirror ke `../frontend/docs/api-changes.md` (dengan banner
-  "jangan diedit di sini" dan path disesuaikan). Sumber kebenaran tetap salinan
-  backend ini — kalau ada perubahan, edit di sini lalu re-copy.
+  "jangan diedit di sini"). Sumber kebenaran tetap salinan backend ini — kalau
+  ada perubahan, edit di sini lalu re-copy.
 
 ## Media insiden (audio/video)
 
@@ -275,6 +280,82 @@ Deadline frame pertama 10 detik.
 
 Deploy backend dan frontend harus bersamaan: frontend lama yang masih memakai
 `?token=` akan gagal terhubung setelah backend ini naik.
+
+## Allowlist endpoint `POST /api/push/subscriptions`
+
+`endpoint` sekarang harus menunjuk ke push service yang diizinkan
+(`fcm.googleapis.com`, `updates.push.services.mozilla.com`,
+`web.push.apple.com`; daftar diatur `webpush.allowed_hosts`). Endpoint lain
+ditolak `400` — termasuk `http://127.0.0.1/...`, IP privat, dan metadata cloud
+(stored SSRF). Endpoint yang tidak dikenal `400`, sama seperti body tanpa
+`endpoint`.
+
+Frontend: tidak ada perubahan kode — `PushSubscription.toJSON().endpoint` dari
+browser sudah benar selama user memakai Chrome/Firefox/Safari. Kalau
+pendaftaran push gagal `400`, tampilkan state "push tidak tersedia" dan
+jangan retry berulang. Baris langganan lama yang endpoint-nya di luar
+allowlist akan dihapus otomatis saat dispatch berikutnya.
+
+## Rate limit `POST /api/sos/classify`
+
+Route ini sekarang punya kuota per user: **10 panggilan per jam** (sliding
+window di Redis, key `ratelimit:classify:<userID>`), diatur lewat
+`sos.classify_rate_limit_per_hour`. Alasan: setiap call memakai STT (Whisper)
++ LLM berbayar.
+
+- `429` + header `Retry-After` (detik, batas atas = panjang window, 3600)
+  ketika kuota habis. Body tetap `{"errors": ...}`.
+- `503` ketika store limiter (Redis) error — endpoint ini **fail-closed**,
+  beda dengan limiter login yang fail-open.
+
+Frontend: tangani `429` (tampilkan pesan kuota + jangan retry otomatis) dan
+`503` (fallback ke trigger tanpa klasifikasi audio). Tidak ada perubahan pada
+`POST /api/sos`.
+
+## Triage hanya dari server — `severity`/`summary` client jadi "klaim"
+
+> **Untuk agent frontend.** Perubahan kontrak, perlu penyesuaian di
+> `src/lib/api.js` / alur trigger.
+
+Dulu `POST /api/sos` menerima `severity` + `summary` (hasil `classify`) dan
+**menyimpannya sebagai triage sistem**, ikut menentukan radius fan-out pertama
+dan dikirim ke responder seolah-olah hasil analisis. Sekarang nilai itu tidak
+dipercaya lagi:
+
+| Dulu | Sekarang |
+|---|---|
+| `{"severity":0.9,"summary":"..."}` → jadi `alerts.severity/summary` + radius 5 km | diabaikan untuk triage dan radius |
+| — | `{"client_severity":0.9,"client_summary":"..."}` → hanya **klaim pelapor**: ditampilkan berlabel "Pelapor menyebut: …" di notifikasi, muncul sebagai `client_severity`/`client_summary` di response, **tidak** mengubah triage/radius |
+
+Yang menentukan triage dan radius sekarang hanya dua hal, dua-duanya dihitung
+server:
+1. hasil `POST /api/sos/classify` (audio) — **otomatis** dipakai trigger
+   berikutnya dari user yang sama dalam **2 menit**, sekali pakai; klien tidak
+   perlu mengirim apa pun;
+2. triage `description` di body `POST /api/sos` (seperti sebelumnya).
+
+Artinya untuk alur audio, klien cukup:
+
+1. `POST /api/sos/classify` (multipart, field `file`) → `triage`;
+2. `POST /api/sos` **tanpa** `severity`/`summary`;
+3. server memakai hasil langkah 1 untuk radius dan `triage` di response.
+
+Kalau klien ingin tetap menampilkan apa yang dilaporkan pengguna, kirim
+`client_summary` (maks 500 karakter) dan/atau `client_severity` (0..1). Response
+`POST /api/sos` mengembalikannya sebagai `client_severity`/`client_summary`.
+
+Catatan tambahan:
+- `severity`/`summary` (nama lama) sekarang **diabaikan** — tidak error, jadi
+  aplikasi versi lama tetap jalan, hanya radius tidak lagi ikut nilai itu.
+- `triage.severity` di response di-clamp ke `0..1` (dulu bisa >1 dari klien).
+- `client_severity`/`client_summary` **tidak disimpan** ke DB: hanya dipakai saat trigger (response + notifikasi). Setelah itu `GET /api/sos/{alertId}` hanya memuat triage server.
+- Payload push menambah `client_severity`/`client_summary`; `severity`/`summary`
+  tetap berisi triage server.
+- `GET /api/sos/{alertId}/media/{mediaId}` sekarang `Content-Disposition:
+  attachment` dan hanya mengirim `Content-Type` dari allowlist
+  (`audio/*`, `video/mp4|webm`, `image/jpeg|png`); tipe lain jadi
+  `application/octet-stream`. Blob dari `fetch` tetap bisa diputar, tapi kalau
+  kode memeriksa `blob.type`, siapkan fallback.
 
 ## Yang belum dikerjakan
 

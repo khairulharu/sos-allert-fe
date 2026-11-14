@@ -201,9 +201,14 @@
         (alert) => alert.masked === true && !dismissedAlerts.has(alert.alert_id),
       )
       const newest = visible[0] || null
-      const current =
-        (pendingAlert && visible.find((alert) => alert.alert_id === pendingAlert.alert_id)) ||
-        null
+      // The open sheet is matched against `active`, not `visible`: once this
+      // user responds, the alert stops being masked and drops out of `visible`,
+      // so matching there froze the sheet on the pre-respond payload — masked
+      // coordinates and a ~100 m distance that never became the exact ones the
+      // backend started returning after POST /respond.
+      const current = pendingAlert
+        ? active.find((alert) => alert.alert_id === pendingAlert.alert_id) || null
+        : null
 
       // A tapped push notification names its alert: open that sheet straight
       // away, even on a cold start where the first poll would only show a banner.
@@ -221,13 +226,6 @@
       } else if (incomingOpen && current) {
         // Keep the sheet stable while the user is reading it.
         pendingAlert = current
-      } else if (
-        incomingOpen &&
-        respondedAlert &&
-        pendingAlert?.alert_id === respondedAlert.alert_id
-      ) {
-        // Already answered: the alert drops out of `visible` (the caller is a
-        // participant now), but the sheet stays up as the live view.
       } else {
         const changed = newest?.alert_id !== pendingAlert?.alert_id
         pendingAlert = newest

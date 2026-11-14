@@ -98,41 +98,66 @@
     })
   }
 
-  function liveIsActive() {
-    if (!live || !validCoords(live.latitude, live.longitude)) return false
-    return !['RESOLVED', 'CANCELLED', 'EXPIRED'].includes(live.status)
+  const LIVE_TERMINAL = ['RESOLVED', 'CANCELLED', 'EXPIRED']
+
+  function liveHasPosition() {
+    return !!live && validCoords(live.latitude, live.longitude)
   }
 
-  function liveIcon() {
+  function liveIsActive() {
+    return liveHasPosition() && !LIVE_TERMINAL.includes(live.status)
+  }
+
+  // A terminal alert keeps its last real position as a dimmed "last seen" dot
+  // instead of dropping the marker. Dropping it left the responder's own
+  // `nearby` pin (~100 m masked, 100 m distance bucket) in the same spot in the
+  // next frame, so the location appeared to teleport the moment the alert ended.
+  function liveIcon(ended = false) {
     return L.divIcon({
       className: 'sos-map-icon',
-      html: '<span class="sos-map-live relative grid h-8 w-8 place-items-center"><span class="absolute inset-0 rounded-full bg-sos/25 animate-sos-pulse"></span><span class="h-3.5 w-3.5 rounded-full bg-sos shadow-sm ring-[2.5px] ring-white"></span></span>',
+      html: ended
+        ? '<span class="relative grid h-8 w-8 place-items-center opacity-80"><span class="h-3 w-3 rounded-full bg-[#98A2B3] ring-[2.5px] ring-white shadow-sm"></span></span>'
+        : '<span class="sos-map-live relative grid h-8 w-8 place-items-center"><span class="absolute inset-0 rounded-full bg-sos/25 animate-sos-pulse"></span><span class="h-3.5 w-3.5 rounded-full bg-sos shadow-sm ring-[2.5px] ring-white"></span></span>',
       iconSize: [32, 32],
       iconAnchor: [16, 16],
     })
   }
 
+  // Which icon the marker currently carries, so a status change swaps it once.
+  let liveMarkerEnded = null
+
   function syncLiveMarker() {
     if (!map) return
-    if (!liveIsActive()) {
+    if (!liveHasPosition()) {
       if (liveMarker) {
         liveMarker.remove()
         liveMarker = null
       }
+      liveMarkerEnded = null
       return
     }
+    const ended = !liveIsActive()
     const position = [live.latitude, live.longitude]
     if (liveMarker) {
       liveMarker.setLatLng(position)
+      if (ended !== liveMarkerEnded) {
+        liveMarkerEnded = ended
+        liveMarker.setIcon(liveIcon(ended))
+        liveMarker.setTooltipContent(ended ? 'Last seen · alert ended' : 'Live SOS location')
+      }
       return
     }
+    liveMarkerEnded = ended
     liveMarker = L.marker(position, {
-      icon: liveIcon(),
+      icon: liveIcon(ended),
       keyboard: false,
       zIndexOffset: 1400,
     })
       .addTo(map)
-      .bindTooltip('Live SOS location', { direction: 'top', offset: [0, -16] })
+      .bindTooltip(ended ? 'Last seen · alert ended' : 'Live SOS location', {
+        direction: 'top',
+        offset: [0, -16],
+      })
   }
 
   function draw() {

@@ -2,11 +2,14 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `2eca9b8` (audio-driven triage: pre-trigger
-`POST /api/sos/classify`, explicit trigger `severity`/`summary`, escalation
-re-fanout) on top of `fd080bb` (that feature), `fb661d9` (browser Web Push),
+Backend state at handoff: commit `4238b5b` (WebSocket first-frame auth F-8:
+`{type:"auth"}` + `auth_ok`, `?token=` ignored; Redis sessions with a 168 h
+TTL, so every pre-F-8 token is dead and users re-login once) on top of
+`204419c` (participant gate + rounded `distance_m`), `2eca9b8` (audio-driven
+triage: pre-trigger `POST /api/sos/classify`, explicit trigger
+`severity`/`summary`, escalation refanout), `fb661d9` (browser Web Push),
 `7e7ec3b` (X-Forwarded-For trust + locked CORS) and `dac6219` (location APIs,
-auth rate limit, audio STT). The mirrored API contract matches `2eca9b8`.
+auth rate limit, audio STT). The mirrored API contract matches `4238b5b`.
 
 ## Run
 
@@ -54,7 +57,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: pentest fixes F-1/F-2/F-3/F-4 — `nearby`
+  workspace. Last re-copy: pentest F-8 — WebSocket first-frame auth (`auth` /
+  `auth_ok`, 10 s deadline, `?token=` ignored) and Redis sessions with
+  `auth.token_ttl_hours` (168 h), from backend `4238b5b` (docs mirror only; the
+  `api/` mirror was already identical). Previous re-copy: pentest fixes
+  F-1/F-2/F-3/F-4 — `nearby`
   `distance_m` rounded to a 100 m bucket (`NearbyResponder.distance_m`) and the
   participant gate on `GET /api/sos/{alertId}`, `.../acknowledge`, `.../respond`
   (`404`/`403` for non-participants, `AlertDetailResponse.responders[]` only for
@@ -223,9 +230,13 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   stopped immediately) and `micErrorText()` for the copy shown in the SOS flow.
 - `src/lib/tracking.js` — two independent WebSocket channels sharing one
   connection implementation. Builds the WS URL (`VITE_WS_URL` or `ws(s)://`
-  derived from `VITE_API_URL`), sends the raw token as `?token=`, reconnects
+  derived from `VITE_API_URL`) with **no token in the query**, reconnects
   with exponential backoff, queues breadcrumbs while connecting, and stops on
-  terminal `ALERT_STATUS` or an `{error}` frame.
+  terminal `ALERT_STATUS` or an `{error}` frame. Auth is in-band: `onopen`
+  sends `{type:"auth",token}` (read fresh from `getToken()`, empty token = no
+  socket at all) and the channel only becomes `open` — and only then flushes
+  its queued breadcrumbs — on `{type:"auth_ok"}`; a 10 s watchdog drops a
+  socket that never gets there so `onclose` can reconnect.
   Sender: `tracking`, `startTracking(alertId, seed)`, `stopTracking()`,
   `sendBreadcrumb(fields)`. Responder (read-only): `responderTracking`,
   `startResponderTracking(alertId, seed)`, `stopResponderTracking()`.
@@ -620,14 +631,21 @@ SOS shows a real OS notification even while the tab is in the background.
 
 ## Live tracking protocol notes
 
-- WS URL: `ws(s)://<ws-base>/ws/sos/:alertId/track?token=<raw token>`; no
-  `Bearer` prefix. `tracking.js` uses `VITE_WS_URL` or derives the base from
-  `VITE_API_URL`.
+- WS URL: `ws(s)://<ws-base>/ws/sos/:alertId/track` — **no `?token=`**, the
+  backend ignores the query (and closes the socket as unauthorized).
+  `tracking.js` uses `VITE_WS_URL` or derives the base from `VITE_API_URL`.
+- Handshake: the first frame must be `{type:"auth",token:"<raw token>"}`
+  (10 s deadline) and the server answers `{type:"auth_ok"}`. The token is the
+  raw session token, no `Bearer`. The server verifies the session and alert
+  participation **before** `auth_ok`, then subscribes and broadcasts, so
+  nothing is missed between `auth_ok` and the first breadcrumb. Native clients
+  may keep sending `Authorization` on the handshake and skip the frame.
+
 - The server sends no initial snapshot: seed from the trigger response or
   `GET /api/sos/active` (App does this once, no polling), then apply frames.
 - Only the sender sends breadcrumb JSON. Responders are subscribe-only; their
   sends are rejected by the backend and echoed as `{error}`.
-- Frames: `{type:"LOCATION_UPDATE",latitude,longitude,speed_mps?,heading_deg?}`,
+- Frames: `{type:"auth_ok"}`, `{type:"LOCATION_UPDATE",latitude,longitude,speed_mps?,heading_deg?}`,
   `{type:"ALERT_STATUS",status,updated_at}`, and
   `{type:"ALERT_TRIAGE",emergency_type,severity,summary,updated_at}`.
 - `RESOLVED`, `CANCELLED`, and `EXPIRED` are terminal: stop reconnecting and
@@ -670,13 +688,17 @@ SOS shows a real OS notification even while the tab is in the background.
   absent, polling the detail every 10 s; `RESPONDER_ADDED` appends new arrivals
   immediately. Distances/ETA are the values recorded when the responder answered,
   not live positions.
-- One active session per account: the backend stores the token on the user row
-  (`users.token`), so logging in anywhere rotates it and revokes whatever session
-  the account had before — a second device, a second browser profile, the
-  installed home-screen app, or a double-submitted login form. The client then
-  sees 401 on its next request and (correctly) signs out, which is why an "it
-  logged me out by itself" report usually means a login happened elsewhere.
-  Multi-device needs a session table server-side (one row per token).
+- One active session per account: sessions live in Redis (`auth:token:<token>` →
+  user id, `auth:user:<user_id>` → token, `auth.token_ttl_hours` default 168 h),
+  so logging in anywhere rotates the token and revokes whatever session the
+  account had before — a second device, a second browser profile, the installed
+  home-screen app, or a double-submitted login form. The client then sees 401 on
+  its next request and (correctly) signs out, which is why an "it logged me out
+  by itself" report usually means a login happened elsewhere or the token
+  expired. `503` from a token check means the session store is down: show a
+  retry, **never** clear the token. The move off `users.token` invalidated every
+  existing token, so one forced re-login per user when it deployed. Multi-device
+  needs one row per token server-side.
 - Incoming-alert semantics: `GET /api/sos/inbox` is the in-app fallback for push
   (it also feeds the sheet when Web Push is off/denied). WS tracking is per-alert
   and only authorizes the sender or a recorded responder, so the app polls the
@@ -724,9 +746,12 @@ followed it. Regressions here were what the review called out, so keep them.
 No frontend test suite. Run `npm run build` and verify the actual UI in a
 browser at `http://localhost:5173` with the backend running.
 
-Two behaviours are covered by browser regression scripts (real Vite dev server,
+Four behaviours are covered by browser regression scripts (real Vite dev server,
 headless Chrome, a mock API on :3000 from `scripts/`): `npm run test:signout`,
-`npm run test:radius`, and `npm run test:media` — the last one opens the
-responder sheet via `/?alert=<id>`, asserts no media request before
+`npm run test:radius`, `npm run test:media`, and `npm run test:ws` — media opens
+the responder sheet via `/?alert=<id>`, asserts no media request before
 `POST /respond`, then that the list and the stream both carry the raw token and
-the clip plays from a `blob:` object URL.
+the clip plays from a `blob:` object URL; `test:ws` runs a hand-rolled
+WebSocket server and asserts the tracking contract (no `?token=` in the upgrade
+URL, `{type:"auth"}` as frame #1, breadcrumbs queued until `auth_ok`, no socket
+at all without a token).

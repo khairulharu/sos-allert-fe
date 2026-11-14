@@ -2,7 +2,7 @@
 
 # API changes — handoff (backend → frontend)
 
-Catatan perubahan kontrak yang dikerjakan di backend. Mirror `api/`
+Catatan perubahan kontrak yang dikerjakan di backend. Mirror `../frontend/api/`
 sudah disalin ulang; lihat "Status copy" di bawah.
 
 ## Alert history + summary
@@ -63,13 +63,13 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 ## Status copy
 
 - `api/api.md` + `api/api-spec.json` diperbarui di backend.
-- Sudah disalin ke `api/` (hash sama per saat handoff ini).
-- Baris "Last re-copy" di `AGENTS.md` sudah diperbarui.
+- Sudah disalin ke `../frontend/api/` (hash sama per saat handoff ini).
+- Baris "Last re-copy" di `../frontend/AGENTS.md` sudah diperbarui.
 - `backend/api/api.md` + `api-spec.json` tidak berubah untuk bagian media (sudah
-  memuat ketiga endpoint); mirror-nya di `api/` masih identik.
-- Dokumen ini adalah mirror dari `../backend/docs/api-changes.md` (path
-  disesuaikan untuk repo ini). Sumber kebenaran tetap salinan backend: jangan
-  edit file ini — ubah di backend lalu re-copy.
+  memuat ketiga endpoint); mirror-nya di `../frontend/api/` masih identik.
+- Dokumen ini juga di-mirror ke `../frontend/docs/api-changes.md` (dengan banner
+  "jangan diedit di sini" dan path disesuaikan). Sumber kebenaran tetap salinan
+  backend ini — kalau ada perubahan, edit di sini lalu re-copy.
 
 ## Media insiden (audio/video)
 
@@ -131,7 +131,8 @@ inline`, `Cache-Control: private, max-age=300`.
 **Gotcha:** endpoint ini butuh header `Authorization`, jadi tidak bisa dipakai
 langsung sebagai `<audio src>` / `<video src>`. Frontend harus `fetch` dulu lalu
 `URL.createObjectURL(blob)` (atau `<audio controls>` diisi dari objek itu).
-Tidak ada signed URL / `?token=` seperti WS tracking.
+Tidak ada signed URL / token di query string (WS tracking juga tidak lagi
+memakai `?token=`).
 
 ### Error
 
@@ -213,6 +214,67 @@ lingkaran tidak lagi bertemu di satu titik.
 Yang perlu dicek di UI: label jarak jadi `500 m` / `1.2 km`, bukan `502 m`.
 Sortir "nearest" tetap jalan (nilainya masih naik monoton). Pin di peta tidak
 berubah sama sekali — berasal dari `latitude`/`longitude` yang sudah diblur.
+
+## Sesi login pindah ke Redis (pentest F-8)
+
+Kontrak `POST /api/users/_login` dan `DELETE /api/users` **tidak berubah**:
+login tetap mengembalikan `{ "data": { "token": "<raw token>" } }` dan token
+tetap dikirim mentah di header `Authorization`. Yang berubah hanya cara backend
+menyimpannya:
+
+- Token sekarang punya masa berlaku (`auth.token_ttl_hours`, default 168 jam).
+  Setelah lewat, request berikutnya `401`.
+- Login baru **selalu membatalkan token lama** (single-session). Kalau user
+  login di device lain, device pertama langsung `401`.
+- Logout menghapus sesi di Redis, jadi token langsung mati.
+- Saat deploy perubahan ini, **semua token lama tidak berlaku** (kolom
+  `users.token` dihapus). Semua user harus login ulang sekali.
+
+Yang perlu dicek di UI:
+
+1. Tangani `401` dengan menghapus token lokal lalu kembali ke layar login.
+   Saat ini `src/lib/api.js` belum punya jalur khusus untuk `401`; setelah
+   deploy, request pertama dengan token lama akan `401` sekali.
+2. `503` pada endpoint ber-auth berarti session store (Redis) sedang down —
+   tampilkan pesan "coba lagi", **jangan** hapus token.
+3. Perilaku single-session: login di device kedua membuat device pertama
+   menerima `401` pada request/heartbeat berikutnya.
+
+## WebSocket tracking: auth lewat frame pertama (pentest F-8)
+
+Token sesi tidak lagi dikirim di URL (`?token=...`). URL sekarang hanya
+`/ws/sos/{alertId}/track`; query `?token=` diabaikan server (socket akan
+ditutup sebagai unauthorized setelah 10 detik).
+
+Alur baru:
+
+1. Buka `new WebSocket(wsUrl(alertId))` — tanpa query token.
+2. Di `onopen`, kirim frame pertama:
+   ```json
+   { "type": "auth", "token": "<raw session token>" }
+   ```
+3. Tunggu balasan `{ "type": "auth_ok" }` **sebelum** mengirim/flush breadcrumb
+   dan sebelum menandai channel `open`.
+4. `{ "error": "..." }` tetap terminal seperti sekarang: tampilkan
+   `lastError`, `stopReconnecting()`, jangan reconnect.
+
+Yang perlu diubah di `../frontend/src/lib/tracking.js`:
+
+- `wsUrl()` tidak lagi menambah `?token=`; cukup `${WS_BASE}/ws/sos/${alertId}/track`.
+- `ws.onopen` saat ini langsung flush `queue` dan `patch({connection:'open'})`.
+  Ubah menjadi: kirim frame auth, lalu flush queue + set `open` di handler
+  `auth_ok` (frame auth tidak boleh masuk antrean breadcrumb).
+- Reconnect memakai token terbaru (`getToken()`); kalau `401`, auth frame
+  berikutnya akan menerima `error` dan channel berhenti.
+- `sendBreadcrumb` tetap diantrekan selama socket `CONNECTING`/sebelum
+  `auth_ok`; jangan kirim breadcrumb sebagai frame pertama.
+
+Klien native (mobile) tidak wajib mengirim frame auth: token mentah di header
+`Authorization` saat handshake diterima dan server tetap membalas `auth_ok`.
+Deadline frame pertama 10 detik.
+
+Deploy backend dan frontend harus bersamaan: frontend lama yang masih memakai
+`?token=` akan gagal terhubung setelah backend ini naik.
 
 ## Yang belum dikerjakan
 

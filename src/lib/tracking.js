@@ -1,5 +1,7 @@
 // Live SOS tracking over the backend WebSocket:
-//   WS /ws/sos/:alertId/track?token=<raw session token>
+//   WS /ws/sos/:alertId/track, then {"type":"auth","token":"<raw token>"}
+// as the first frame (10 s deadline). The session token never travels in the
+// URL; the channel is only usable once the server answers {"type":"auth_ok"}.
 //
 // The server broadcasts LOCATION_UPDATE, ALERT_STATUS, ALERT_TRIAGE and
 // RESPONDER_ADDED to the sender and confirmed responders. Only the sender may
@@ -16,6 +18,8 @@ const WS_BASE = (
 const TERMINAL_STATUSES = new Set(['RESOLVED', 'CANCELLED', 'EXPIRED'])
 const MAX_BACKOFF_MS = 15000
 const MAX_QUEUE = 20
+// The backend drops the socket if the auth frame is late or missing.
+const AUTH_TIMEOUT_MS = 10000
 
 const EMPTY = {
   alertId: null,
@@ -36,8 +40,7 @@ const EMPTY = {
 }
 
 function wsUrl(alertId) {
-  const token = getToken() || ''
-  return `${WS_BASE}/ws/sos/${encodeURIComponent(alertId)}/track?token=${encodeURIComponent(token)}`
+  return `${WS_BASE}/ws/sos/${encodeURIComponent(alertId)}/track`
 }
 
 function createChannel() {
@@ -50,6 +53,8 @@ function createChannel() {
   let stopped = true
   let terminal = false
   let queue = []
+  let authed = false
+  let authTimer = null
 
   function patch(fields) {
     store.update((state) => ({ ...state, ...fields }))
@@ -62,8 +67,17 @@ function createChannel() {
     }
   }
 
+  function clearAuthTimer() {
+    if (authTimer) {
+      clearTimeout(authTimer)
+      authTimer = null
+    }
+  }
+
   function closeSocket() {
     clearReconnect()
+    clearAuthTimer()
+    authed = false
     queue = []
     if (!socket) return
     socket.onopen = null
@@ -90,6 +104,18 @@ function createChannel() {
     try {
       message = JSON.parse(event.data)
     } catch {
+      return
+    }
+
+    if (message?.type === 'auth_ok') {
+      // Only now may breadcrumbs flow: the auth frame is the first one.
+      authed = true
+      clearAuthTimer()
+      attempts = 0
+      patch({ connection: 'open', lastError: '' })
+      const pending = queue
+      queue = []
+      for (const payload of pending) socket?.send(payload)
       return
     }
 
@@ -179,7 +205,15 @@ function createChannel() {
       return
     }
 
+    const token = getToken() || ''
+    if (!token) {
+      patch({ connection: 'error', lastError: 'Sign in again to resume live updates.' })
+      stopReconnecting()
+      return
+    }
+
     clearReconnect()
+    authed = false
     patch({ connection: attempts === 0 ? 'connecting' : 'reconnecting' })
 
     let ws
@@ -194,11 +228,11 @@ function createChannel() {
 
     ws.onopen = () => {
       if (socket !== ws) return
-      attempts = 0
-      patch({ connection: 'open', lastError: '' })
-      const pending = queue
-      queue = []
-      for (const payload of pending) ws.send(payload)
+      ws.send(JSON.stringify({ type: 'auth', token }))
+      authTimer = setTimeout(() => {
+        // No auth_ok within the server's deadline: drop it and reconnect.
+        if (socket === ws && !authed) ws.close()
+      }, AUTH_TIMEOUT_MS)
     }
 
     ws.onmessage = (event) => {
@@ -206,6 +240,8 @@ function createChannel() {
     }
 
     ws.onclose = () => {
+      clearAuthTimer()
+      authed = false
       if (socket === ws) socket = null
       if (stopped || terminal) return
       scheduleReconnect()
@@ -267,11 +303,13 @@ function createChannel() {
       timestamp: Date.now(),
     })
 
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    if (socket && socket.readyState === WebSocket.OPEN && authed) {
       socket.send(payload)
       return
     }
-    if (socket && socket.readyState === WebSocket.CONNECTING && queue.length < MAX_QUEUE) {
+    // Queue while connecting or waiting for auth_ok; a breadcrumb must never be
+    // the first frame on the wire.
+    if (socket && socket.readyState < WebSocket.CLOSING && queue.length < MAX_QUEUE) {
       queue.push(payload)
     }
   }

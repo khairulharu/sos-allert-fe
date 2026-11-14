@@ -8,6 +8,25 @@ const USER_KEY = 'sos_alert_user'
 
 let cachedToken = null
 
+// A 401 means the session is gone (revoked by another login, expired, or the
+// account was cleared). The app has exactly one sign-out path, so the client
+// reports it here instead of leaving every view to invent its own recovery —
+// before this, a dead session in Alerts/Contacts/Profile only showed "couldn't
+// load" until the inbox poll happened to notice.
+let unauthorizedHandler = null
+
+export function setUnauthorizedHandler(handler) {
+  unauthorizedHandler = typeof handler === 'function' ? handler : null
+}
+
+function reportUnauthorized() {
+  try {
+    unauthorizedHandler?.()
+  } catch {
+    /* never let the sign-out path mask the request error */
+  }
+}
+
 export function getToken() {
   if (cachedToken) return cachedToken
   cachedToken = localStorage.getItem(TOKEN_KEY)
@@ -56,9 +75,13 @@ async function request(method, path, body, { token = true, envelope = false, hea
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
   // Let the browser set the multipart boundary for FormData.
   if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json'
+  let sentToken = null
   if (token) {
     const t = getToken()
-    if (t) headers.Authorization = t
+    if (t) {
+      headers.Authorization = t
+      sentToken = t
+    }
   }
 
   let resp
@@ -82,6 +105,10 @@ async function request(method, path, body, { token = true, envelope = false, hea
   }
 
   if (!resp.ok) {
+    // Only a request that actually presented a session token can expire it: a
+    // wrong password (login 401) or the logout DELETE, which sends its own
+    // captured header, must not trigger the sign-out path.
+    if (resp.status === 401 && sentToken) reportUnauthorized()
     const detail =
       (payload && (payload.errors || payload.message)) ||
       (Array.isArray(payload?.errors) ? payload.errors.join(', ') : '') ||
@@ -113,6 +140,7 @@ async function requestBlob(path) {
   }
 
   if (!resp.ok) {
+    if (resp.status === 401 && t) reportUnauthorized()
     let payload = null
     try {
       payload = await resp.json()

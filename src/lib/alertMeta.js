@@ -10,17 +10,39 @@ export function emergencyLabel(type) {
   return TYPE_LABELS[type] || 'SOS'
 }
 
+// Severity tiers. The fan-out radius is the backend's ladder (1/2/5 km), and the
+// word under the severity bar must not disagree with the radius copy next to it
+// (a 0.6 alert read "High" while the copy claimed the mid radius), so both sides
+// of that card read this one table instead of hardcoding their own thresholds.
+const SEVERITY_TIERS = [
+  { min: 0.75, word: 'Critical', radiusM: 5000 },
+  { min: 0.67, word: 'High', radiusM: 5000 },
+  { min: 0.34, word: 'Medium', radiusM: 2000 },
+  { min: 0, word: 'Low', radiusM: 1000 },
+]
+
+/**
+ * The tier a severity sits in, or null when there is no number to judge.
+ * `radiusM` is the fan-out radius the backend uses for that tier.
+ */
+export function severityTier(severity) {
+  const value = Number(severity)
+  if (severity === null || severity === undefined || !Number.isFinite(value)) return null
+  const clamped = Math.min(1, Math.max(0, value))
+  return SEVERITY_TIERS.find((tier) => clamped >= tier.min) || SEVERITY_TIERS.at(-1)
+}
+
 /**
  * Severity as a word. The raw 0–1 float is a backend value and reads as noise in
  * the UI ("severity 0.72"); the word is what a responder can act on.
  */
 export function severityWord(severity) {
-  const value = Number(severity)
-  if (severity === null || severity === undefined || !Number.isFinite(value)) return ''
-  if (value >= 0.75) return 'Critical'
-  if (value >= 0.5) return 'High'
-  if (value >= 0.25) return 'Medium'
-  return 'Low'
+  return severityTier(severity)?.word || ''
+}
+
+/** Fan-out radius (metres) for this severity, or null when it has none. */
+export function severityRadiusM(severity) {
+  return severityTier(severity)?.radiusM ?? null
 }
 
 export function initialsFor(name) {

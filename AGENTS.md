@@ -2,14 +2,19 @@
 
 Svelte 5 + Vite + Tailwind v4 mobile-first UI for the SOS Allert backend.
 Companion backend: `../backend` (Go/Fiber, module `golang-clean-architecture`).
-Backend state at handoff: commit `4238b5b` (WebSocket first-frame auth F-8:
-`{type:"auth"}` + `auth_ok`, `?token=` ignored; Redis sessions with a 168 h
-TTL, so every pre-F-8 token is dead and users re-login once) on top of
-`204419c` (participant gate + rounded `distance_m`), `2eca9b8` (audio-driven
-triage: pre-trigger `POST /api/sos/classify`, explicit trigger
+Backend state at handoff: commit `530fd13` (`d931206` is the newest contract
+change: pentest F-6/F-7/F-9/F-11/F-12, server-side triage only — `client_severity`
+/`client_summary` are a labelled claim, `POST /api/sos/classify` is throttled,
+push endpoints are allowlisted, media downloads are `attachment`; `b6c553d` and
+`530fd13` only touched docs and the orchestrator config, and the mirrored
+`api/` files are byte-identical to the backend HEAD) on top of `4238b5b`
+(WebSocket first-frame auth F-8: `{type:"auth"}` + `auth_ok`, `?token=` ignored;
+Redis sessions with a 168 h TTL, so every pre-F-8 token is dead and users
+re-login once), `204419c` (participant gate + rounded `distance_m`), `2eca9b8`
+(audio-driven triage: pre-trigger `POST /api/sos/classify`, explicit trigger
 `severity`/`summary`, escalation refanout), `fb661d9` (browser Web Push),
 `7e7ec3b` (X-Forwarded-For trust + locked CORS) and `dac6219` (location APIs,
-auth rate limit, audio STT). The mirrored API contract matches `4238b5b`.
+auth rate limit, audio STT).
 
 ## Run
 
@@ -143,7 +148,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   Push is wired**: the Profile toggle registers `/sw.js` + a VAPID subscription
   with `POST /api/push/subscriptions`, `App.svelte` re-syncs it on
   restore/login and drops it on sign-out/session-expired, and a nearby SOS
-  shows a real OS notification (see "Browser Web Push" below). **Install icons
+  shows a real OS notification whose tap opens that alert's sheet (the
+  notification carries `data.alert_id`; see "Browser Web Push" below).
+  **Install icons
   are wired**: `public/manifest.webmanifest`, `public/apple-touch-icon.png`
   (180×180) and `public/icons/icon-192|512.png` carry the sign-in logo — the
   `--color-ink` tile, its `from-white/20` sheen, and the white `Siren` at 30/64
@@ -167,7 +174,12 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 
 - `src/lib/api.js` — fetch wrapper, raw token, API base URL. Error objects carry
   `status`, `payload`, and `retryAfter` (parsed from `Retry-After` seconds or
-  HTTP date). `request()` passes `FormData` through untouched (no JSON
+  HTTP date). **Every 401 that actually presented a session token is reported to
+  `setUnauthorizedHandler()`** (registered once by `App.svelte`), so a dead
+  session ends through one sign-out path no matter which view, poller or upload
+  hit it; a failed login (no token sent) and the logout `DELETE` (its own
+  captured header) are deliberately not reported. `request()` passes `FormData`
+  through untouched (no JSON
   Content-Type) for multipart uploads; `sos.uploadMedia(alertId, blob, filename)`
   posts field `file` to `/api/sos/:id/media` and `sos.classify(blob, filename)`
   the same field to `/api/sos/classify` (pre-trigger classification, thrown
@@ -190,9 +202,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   instead of reused. `PUSH_HELP` holds the user-facing copy.
 - `public/sw.js` — the service worker Vite serves from the root: `push` →
   `showNotification` (`title`/`body`/`tag = alert_id`, `requireInteraction`,
-  `data.url`), `notificationclick` → focus an existing window (messaging it
-  `{type:'sos-alert', alert_id}`) or `openWindow('/?alert=<id>')`, so the app can
-  open that alert's sheet instead of only a banner.
+  `data.url`, **`data.alert_id`** — dropping that last one made every tap open a
+  bare app and is covered by `npm run test:push`), `notificationclick` → focus an
+  existing window (messaging it `{type:'sos-alert', alert_id}`) or
+  `openWindow('/?alert=<id>')`, so the app can open that alert's sheet instead of
+  only a banner.
 - `src/lib/rateLimit.js` — `retrySeconds(err)` + `formatCooldown(seconds)` shared
   by the auth and SOS 429 UIs.
 - `src/lib/place.js` — reverse geocoding for the header location pill
@@ -225,7 +239,10 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   claims. `startPositionWatch()`/`stopPositionWatch()` own
   the app's only `watchPosition` (`enableHighAccuracy`, `maximumAge: 0`), so a
   session streams fixes instead of asking once a minute; `liveFix` carries
-  `{latitude, longitude, accuracy, speed, heading, at}`. `browserPosition()`
+  `{latitude, longitude, accuracy, speed, heading, at}`. A `fixEpoch` guard
+  (bumped by `stopPositionWatch()`) drops any `watchPosition`/`getCurrentPosition`
+  callback that lands after the session was torn down — a late fix used to
+  repopulate `liveFix` after sign-out. `browserPosition()`
   returns the newest fix younger than 2 minutes, dedupes concurrent askers, and
   otherwise acquires one — it never returns a stale fix as current. `accuracy`
   (metres) draws the map's uncertainty circle and rides the SOS trigger as
@@ -261,7 +278,10 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `formatDistance`, `formatEta`, `responderMeta` (one "240 m away · ETA 3 min ·
   answered 2 min ago" line from a `ResponderSummary`/`RESPONDER_ADDED` payload),
   and `distanceMeters` (haversine) shared by the incoming sheet, Home banner and
-  the SOS screen.
+  the SOS screen. `severityTier()`/`severityWord()`/`severityRadiusM()` read one
+  tier table (Critical/High → 5 km, Medium → 2 km, Low → 1 km), so the severity
+  word under the bar and the radius copy beside it can never disagree — never
+  hardcode `>= 0.67` thresholds in a component again.
 - `src/lib/focus.js` — `trap(node, { initial })`, the Svelte action both
   full-screen dialogs use (`AlertFlow`, `AlertIncoming`). On mount it focuses the
   first `[data-autofocus]` (or first visible focusable) inside the node, wraps
@@ -273,11 +293,14 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - `src/lib/stores.js` — session store. **Do not regress** `restoreSession()`:
   it must use `getToken()` (localStorage key `sos_alert_token`), never
   `user.id`. Using `user.id` caused every authenticated call after login to
-  return 401 (fixed in commit `97dc741`).
+  return 401 (fixed in commit `97dc741`). `login()` follows the same rule: it
+  takes the token from `POST /api/users/_login` and throws when the response has
+  none — the old `data.token || id` fallback was that same regression waiting to
+  happen.
   `locationSharing` (localStorage key `sos_alert_location_sharing`, default on)
   is the Profile "Live location" switch: `App.svelte`'s heartbeat skips the `PUT`
   while it is off and publishes once when it is turned back on, so the privacy
-  control is real. `lastTriage` holds the newest AI triage for the alert flow.
+  control is real.
   `logout()` must revoke **the session this tab owns** — it reads
   `getSessionToken()` (the in-memory token, never the shared localStorage) and
   passes it to `auth.logout(token)`. The backend keeps a single token per user
@@ -329,7 +352,12 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `stopInboxPolling()` removes it again. `onSignOut()` ends with the store's
   `logout()`, which calls `DELETE /api/users` and clears the token + stored user,
   so signing out really revokes the session (previously it only reset the local
-  flags and a reload logged the user straight back in).
+  flags and a reload logged the user straight back in). **A 401 from anywhere
+  lands in `onSessionExpired()`**: `onMount` registers `setUnauthorizedHandler()`
+  from `api.js`, so Alerts/Contacts/Profile no longer sit on a dead session until
+  the inbox poll happens to notice; `sessionEnding` keeps the teardown
+  re-entrant safe when several requests 401 at once (`npm run test:session`
+  locks it).
 - `src/lib/components/HomeView.svelte` — full-bleed, map-first home:
   a fullscreen `MapCard` is the surface. At the top is a full-bleed gradient
   header (`from-white via-[#F8FAFF] to-[#EAF1FB]`) — no outer top/side gap,
@@ -453,7 +481,13 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   back to a bare "N responders are on the way".
   Ending an active alert takes two taps — "I'm safe — end alert" arms
   `confirming`, the second tap sends `POST /resolve` — so a stray tap cannot
-  stop a live alert. Starts tracking via `ontrack`, sends throttled breadcrumbs
+  stop a live alert. **The ended screen is only reached after the server
+  accepted the resolve**: an error (network, 401, 5xx) keeps the active screen
+  up with the message and the two-tap button armed for a retry, because claiming
+  "You're marked safe" while the backend alert is still live is the kind of lie
+  a safety app cannot afford (`npm run test:resolve` locks it). A `404` means the
+  incident is already gone, so that one does end the flow. Starts tracking via
+  `ontrack`, sends throttled breadcrumbs
   while active, shows the WS connection state, and ends on terminal
   `ALERT_STATUS`. There is no manual recorder: the countdown clip is the only
   one, and the active view just reports its receipt ("Sending your audio…" →
@@ -469,7 +503,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   three summary cards come from `GET /api/sos/summary` (`sent.total`,
   `responded.resolved`, `received.active`) and render `—` until it answers.
   Never derive totals from `active`/`inbox`: both are active-only.
-- `src/lib/components/ContactsView.svelte` — emergency contacts.
+- `src/lib/components/ContactsView.svelte` — emergency contacts. Phone actions are
+  real links built from a digits-only number (`sms:`/`tel:`); a contact without a
+  phone renders "No phone" instead of two controls that do nothing, and the number
+  is never percent-encoded into the URI (`sms:%2B62…` opens an empty recipient in
+  several clients).
 - `src/lib/components/ProfileView.svelte` — profile + real settings. No mock
   identity and no fabricated numbers: `user` defaults to `{}`, the two stats are
   the live contact count (`contacts.list()`, `—` until it answers) and
@@ -634,8 +672,11 @@ SOS shows a real OS notification even while the tab is in the background.
   `subscription.unsubscribe()`, so the browser stops receiving alerts.
 - Notification payload: `{title, body, data}` where `data` mirrors the FCM data
   map (`alert_id`, `sender_id`, `emergency_type`, `latitude`, `longitude`,
-  optional `severity`/`summary`) plus `url: "/"`; `public/sw.js` renders it and
-  a click focuses an open window (or opens `/`).
+  optional `severity`/`summary`) plus `url: "/"`. `public/sw.js` renders it and
+  **copies `alert_id` into the notification's own `data`**; a click then messages
+  an open window with `{type:'sos-alert', alert_id}` or opens
+  `/?alert=<id>` on a cold start, which is what makes the tapped alert's sheet
+  open instead of a bare Home screen.
 - `App.svelte` re-syncs silently on restore/login — `syncPushSubscription()`
   only runs when the permission is already granted, so a browser that never
   opened the toggle gets no unprompted dialog (its in-app inbox sheet still
@@ -768,15 +809,28 @@ followed it. Regressions here were what the review called out, so keep them.
 No frontend test suite. Run `npm run build` and verify the actual UI in a
 browser at `http://localhost:5173` with the backend running.
 
-Four behaviours are covered by browser regression scripts (real Vite dev server,
-headless Chrome, a mock API on :3000 from `scripts/`): `npm run test:signout`,
-`npm run test:radius`, `npm run test:media`, and `npm run test:ws` — media opens
-the responder sheet via `/?alert=<id>`, asserts no media request before
-`POST /respond`, then that the list and the stream both carry the raw token and
-the clip plays from a `blob:` object URL; `test:ws` runs a hand-rolled
-WebSocket server and asserts the tracking contract (no `?token=` in the upgrade
-URL, `{type:"auth"}` as frame #1, breadcrumbs queued until `auth_ok`, no socket
-at all without a token).
+Seven behaviours are covered by regression scripts (six run the real app
+against a mock API on :3000 via the Vite dev server and headless Chrome;
+`test:push` needs no browser), and CI runs all of them:
+
+- `npm run test:signout` — sign-out with a location request in flight leaves no
+  unauthenticated request behind (issue #6).
+- `npm run test:radius` — a radius tap during a poll is sent and survives a stale
+  answer (issue #5).
+- `npm run test:media` — opens the responder sheet via `/?alert=<id>`, asserts no
+  media request before `POST /respond`, then that the list and the stream both
+  carry the raw token and the clip plays from a `blob:` object URL.
+- `npm run test:ws` — hand-rolled WebSocket server: no `?token=` in the upgrade
+  URL, `{type:"auth"}` as frame #1, breadcrumbs queued until `auth_ok`, no socket
+  at all without a token.
+- `npm run test:session` — a wrong password (401 with no token attached) does not
+  end a session; a 401 from a normal view signs out exactly once and says why;
+  four simultaneous 401s still produce one `DELETE /api/users`.
+- `npm run test:resolve` — a failing `POST /resolve` keeps the active screen and
+  reports the failure, and a retry after recovery reaches "You're marked safe".
+- `npm run test:push` — evaluates `public/sw.js` in a Node sandbox: the
+  notification carries `data.alert_id`, a tap on an open window posts
+  `{type:'sos-alert', alert_id}`, a cold start opens `/?alert=<id>`.
 
 ## T3 Code orchestrator (delegation protocol)
 

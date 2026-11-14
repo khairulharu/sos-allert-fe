@@ -20,7 +20,11 @@ self.addEventListener('push', (event) => {
       tag: data.alert_id || 'sos-alert',
       renotify: true,
       requireInteraction: true,
-      data: { url: data.url || '/' },
+      // `alert_id` must ride along: `notificationclick` below reads it from
+      // here to open that alert's sheet (`?alert=` / a `sos-alert` message).
+      // The push payload carries it in `data.alert_id`; a notification without
+      // it can only focus the app, which read as "tapping did nothing".
+      data: { url: data.url || '/', alert_id: data.alert_id || '' },
     }),
   )
 })

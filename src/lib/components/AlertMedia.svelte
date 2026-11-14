@@ -164,7 +164,7 @@
         Evidence · {items.length} {items.length === 1 ? 'clip' : 'clips'}
       </p>
       {#if listState === 'loading'}
-        <span class="inline-flex items-center gap-1 text-[11px] text-muted">
+        <span class="inline-flex items-center gap-1 text-[12px] text-muted">
           <Loader2 size={10} class="animate-spin" />
           Checking
         </span>

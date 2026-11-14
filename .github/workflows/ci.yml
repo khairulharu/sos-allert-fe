@@ -52,3 +52,15 @@ jobs:
 
       - name: Regression — responder media player
         run: npm run test:media
+
+      - name: Regression — WebSocket auth contract
+        run: npm run test:ws
+
+      - name: Regression — push notification tap
+        run: npm run test:push
+
+      - name: Regression — single sign-out on 401
+        run: npm run test:session
+
+      - name: Regression — resolve failure stays active
+        run: npm run test:resolve

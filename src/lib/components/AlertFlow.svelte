@@ -210,10 +210,11 @@
       (Number.isFinite(coords?.lat) && Number.isFinite(coords?.lng) ? coords : null)
 
     // The clip from the countdown. Classify it first so the first fan-out
-    // already uses the audio level: explicit `emergency_type`/`severity`/
-    // `summary` win over the description triage, and severity picks the
-    // adaptive radius. classify() persists nothing, so the clip is uploaded
-    // again below as the evidence responders can listen to.
+    // already uses the audio level: the backend caches the classify result for
+    // this user for 2 minutes (single use) and the trigger below picks it up
+    // automatically — the client never sends the triage level, only the audio.
+    // classify() persists nothing, so the clip is uploaded again below as the
+    // evidence responders can listen to.
     const clip = capturePromise ? await capturePromise : null
     capturePromise = null
     let audioTriage = null
@@ -230,11 +231,19 @@
         if (classified?.transcript) transcript = classified.transcript
         transcriptionStatus = classified?.transcription_status || ''
       } catch (err) {
-        // 503 (STT off) / 502 (provider down) / 400 / offline: send the SOS on
-        // the description triage instead. The media upload below re-classifies
-        // from the same clip, and the backend widens the fan-out if that raises
-        // the severity.
-        classifyError = err?.status ? `HTTP ${err.status}` : err?.message || 'unavailable'
+        // 429 (hourly classify quota) / 503 / 502 (STT off, provider down) /
+        // 400 / offline: send the SOS on the description triage instead, with no
+        // retry. The media upload below re-classifies from the same clip, and
+        // the backend widens the fan-out if that raises the severity.
+        const status = err?.status
+        classifyError =
+          status === 429
+            ? 'hourly quota reached'
+            : status === 502 || status === 503
+              ? 'audio service unavailable'
+              : status
+                ? `HTTP ${status}`
+                : err?.message || 'unavailable'
       } finally {
         classifying = false
       }
@@ -248,11 +257,9 @@
       fields.longitude = pos.lng
       if (Number.isFinite(pos.accuracy)) fields.accuracy_meters = pos.accuracy
     }
-    if (audioTriage) {
-      fields.emergency_type = audioTriage.emergency_type
-      if (Number.isFinite(audioTriage.severity)) fields.severity = audioTriage.severity
-      if (audioTriage.summary) fields.summary = audioTriage.summary
-    }
+    // Only the type: the server derives `severity`/`summary` itself (from the
+    // classify cache or the description) and ignores the legacy fields.
+    if (audioTriage?.emergency_type) fields.emergency_type = audioTriage.emergency_type
 
     let result
     try {

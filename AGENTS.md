@@ -58,9 +58,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `distance_m` rounded to a 100 m bucket (`NearbyResponder.distance_m`) and the
   participant gate on `GET /api/sos/{alertId}`, `.../acknowledge`, `.../respond`
   (`404`/`403` for non-participants, `AlertDetailResponse.responders[]` only for
-  participants) from backend `45f2219`. Previous re-copy: alert history +
-  summary (`GET /api/sos/history` with `SearchAlertHistory` query params and
-  `paging`, `GET /api/sos/summary`, `AlertStatusCounts`,
+  participants) from backend `204419c`. Previous re-copy:
+  alert history + summary (`GET /api/sos/history` with `SearchAlertHistory`
+  query params and `paging`, `GET /api/sos/summary`, `AlertStatusCounts`,
   `AlertRespondedCounts`, `AlertSummaryResponse`) from backend `ef73bec` plus
   the uncommitted alert-history working tree. Previous re-copy: the responder
   list (`AlertDetailResponse.responders`, `ResponderSummary`) and the
@@ -87,8 +87,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   false). Any other origin fails preflight, so the app must be served from one
   of those two origins. Only `Content-Disposition` is exposed (see rate-limit
   gap below).
-- Protected routes: everything except `POST /api/users`,
-  `POST /api/users/_login`, and `GET /metrics`.
+- Protected routes: everything except `POST /api/users` and
+  `POST /api/users/_login`. `GET /metrics` is registered only when
+  `metrics.token` is set and requires that token in `Authorization`
+  (`Bearer <token>` accepted); otherwise it returns `401`, and `404` when no
+  token is configured.
 
 ## Current frontend state
 
@@ -484,7 +487,7 @@ export const location = {
         "user_id": "user-b",
         "latitude": -6.21,
         "longitude": 106.848,
-        "distance_m": 262,
+        "distance_m": 300,
         "last_seen": 1730304000000
       }
     ]

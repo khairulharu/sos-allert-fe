@@ -43,6 +43,7 @@ export function timeAgo(timestamp) {
 
 export function formatDistance(meters) {
   if (!Number.isFinite(meters)) return ''
+  if (meters < 100) return 'under 100 m'
   return meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1000).toFixed(1)} km`
 }
 

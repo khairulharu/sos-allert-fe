@@ -45,6 +45,10 @@
   // the alert detail) and who they are (`responders`, participant-only).
   let respondersEnRoute = $state(0)
   let respondersOnWay = $state([])
+  // A 404 on the detail poll means the incident expired or was removed while
+  // the tracking socket was down (no ALERT_STATUS frame), so the poll stops and
+  // the responder block says so instead of silently retrying forever.
+  let detailUnavailable = $state(false)
   let confirming = $state(false)
   let errorMsg = $state('')
   let rateLimited = $state(false)
@@ -270,6 +274,7 @@
     }
 
     alertId = result.alert_id
+    detailUnavailable = false
     recipientsNotified = result.recipients_notified || 0
     triggeredAt = result.triggered_at ? new Date(result.triggered_at) : null
     applyTriage(result.triage)
@@ -563,6 +568,7 @@
   $effect(() => {
     if (phase !== 'active' || !alertId) return
     let cancelled = false
+    let timer = null
     const load = async () => {
       try {
         const detail = await sosApi.get(alertId)
@@ -573,12 +579,20 @@
         // Participant-only: other viewers keep the bare count.
         if (Array.isArray(detail.responders)) respondersOnWay = detail.responders
         if (detail.status === 'ACKNOWLEDGED') acknowledged = true
-      } catch {
-        /* the alert poll is best-effort; App owns the 401 handling */
+      } catch (err) {
+        if (cancelled) return
+        // The sender is a participant, so a 404 here means the incident is
+        // gone (expired/removed), not that the request was unauthorized. Stop
+        // polling and say so; App still owns the 401 handling.
+        if (err?.status === 404) {
+          cancelled = true
+          detailUnavailable = true
+          clearInterval(timer)
+        }
       }
     }
     load()
-    const timer = setInterval(load, 10000)
+    timer = setInterval(load, 10000)
     return () => {
       cancelled = true
       clearInterval(timer)
@@ -1012,65 +1026,77 @@
         {/if}
       </div>
 
-      <div class="mt-4 flex items-center justify-between gap-2 px-0.5">
-        <p class="text-[12px] font-semibold uppercase tracking-[0.14em] text-white/55">
-          Responders notified · {notifiedTotal}
-        </p>
-        <span
-          class="flex shrink-0 items-center gap-1 text-[12px] font-medium {respondedCount > 0
-            ? 'text-[#6EE7B7]'
-            : 'text-white/60'}"
-        >
+      {#if detailUnavailable}
+        <div class="mt-4 rounded-2xl bg-white/[0.05] px-4 py-3 ring-1 ring-white/[0.06]">
+          <p class="text-[13px] font-semibold text-white">This incident is no longer available</p>
+          <p class="mt-0.5 text-[12px] leading-snug text-white/60">
+            It may have expired or been removed. Responder updates have stopped; close this screen
+            when it's safe.
+          </p>
+        </div>
+      {:else}
+        <div class="mt-4 flex items-center justify-between gap-2 px-0.5">
+          <p class="text-[12px] font-semibold uppercase tracking-[0.14em] text-white/55">
+            Responders notified · {notifiedTotal}
+          </p>
           <span
-            class="h-1.5 w-1.5 rounded-full {respondedCount > 0
-              ? 'bg-[#34D399] animate-live'
-              : 'bg-white/40'}"
-          ></span>
-          {responderStatusLabel}
-        </span>
-      </div>
-
-      {#if respondersList.length}
-        <div
-          class="mt-2.5 divide-y divide-white/[0.07] overflow-hidden rounded-2xl bg-white/[0.05] ring-1 ring-white/[0.06]"
-        >
-          {#each respondersList as person (person.user_id)}
-            <div class="flex items-center gap-2.5 px-3.5 py-2.5">
-              <span
-                class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20 text-[11px] font-bold text-[#8FF0C6]"
-              >
-                {initialsFor(person.name || 'Responder')}
-              </span>
-              <div class="min-w-0 flex-1">
-                <p class="truncate text-[13px] font-semibold text-white">
-                  {person.name || 'Responder'}
-                </p>
-                {#if responderMeta(person)}
-                  <p class="mt-0.5 truncate text-[12px] text-white/60">{responderMeta(person)}</p>
-                {/if}
-              </div>
-              <span
-                class="shrink-0 rounded-full bg-[#0BA36F]/15 px-2 py-1 text-[11px] font-semibold text-[#8FF0C6]"
-                >On the way</span
-              >
-            </div>
-          {/each}
-        </div>
-      {:else if respondedCount > 0}
-        <div class="mt-2.5 flex items-start gap-2.5 rounded-2xl bg-[#0BA36F]/10 px-3.5 py-3 ring-1 ring-[#0BA36F]/20">
-          <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20">
-            <Navigation size={15} strokeWidth={2.4} class="text-[#6EE7B7]" />
+            class="flex shrink-0 items-center gap-1 text-[12px] font-medium {respondedCount > 0
+              ? 'text-[#6EE7B7]'
+              : 'text-white/60'}"
+          >
+            <span
+              class="h-1.5 w-1.5 rounded-full {respondedCount > 0
+                ? 'bg-[#34D399] animate-live'
+                : 'bg-white/40'}"
+            ></span>
+            {responderStatusLabel}
           </span>
-          <div class="min-w-0 flex-1">
-            <p class="text-[13px] font-semibold text-[#8FF0C6]">
-              {respondedCount} {respondedCount === 1 ? 'responder is' : 'responders are'} on the way
-            </p>
-            <p class="mt-0.5 text-[12px] leading-snug text-[#8FF0C6]/70">
-              Stay where you are if it's safe. Names and distances are not part of this alert's
-              response.
-            </p>
-          </div>
         </div>
+
+        {#if respondersList.length}
+          <div
+            class="mt-2.5 divide-y divide-white/[0.07] overflow-hidden rounded-2xl bg-white/[0.05] ring-1 ring-white/[0.06]"
+          >
+            {#each respondersList as person (person.user_id)}
+              <div class="flex items-center gap-2.5 px-3.5 py-2.5">
+                <span
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20 text-[11px] font-bold text-[#8FF0C6]"
+                >
+                  {initialsFor(person.name || 'Responder')}
+                </span>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-[13px] font-semibold text-white">
+                    {person.name || 'Responder'}
+                  </p>
+                  {#if responderMeta(person)}
+                    <p class="mt-0.5 truncate text-[12px] text-white/60">{responderMeta(person)}</p>
+                  {/if}
+                </div>
+                <span
+                  class="shrink-0 rounded-full bg-[#0BA36F]/15 px-2 py-1 text-[11px] font-semibold text-[#8FF0C6]"
+                  >On the way</span
+                >
+              </div>
+            {/each}
+          </div>
+        {:else if respondedCount > 0}
+          <div
+            class="mt-2.5 flex items-start gap-2.5 rounded-2xl bg-[#0BA36F]/10 px-3.5 py-3 ring-1 ring-[#0BA36F]/20"
+          >
+            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[#0BA36F]/20">
+              <Navigation size={15} strokeWidth={2.4} class="text-[#6EE7B7]" />
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="text-[13px] font-semibold text-[#8FF0C6]">
+                {respondedCount} {respondedCount === 1 ? 'responder is' : 'responders are'} on the way
+              </p>
+              <p class="mt-0.5 text-[12px] leading-snug text-[#8FF0C6]/70">
+                Stay where you are if it's safe. Names and distances are not part of this alert's
+                response.
+              </p>
+            </div>
+          </div>
+        {/if}
       {/if}
 
       {#if liveConnection === 'reconnecting'}

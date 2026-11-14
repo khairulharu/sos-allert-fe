@@ -3,6 +3,7 @@
   import { Crosshair, Layers, ChevronRight } from '@lucide/svelte'
   import L from 'leaflet'
   import 'leaflet/dist/leaflet.css'
+  import { formatDistance } from '$lib/alertMeta.js'
 
   let {
     height = 'h-[228px]',
@@ -65,11 +66,6 @@
       null,
     ),
   )
-
-  function distanceLabel(m) {
-    if (!Number.isFinite(m)) return '—'
-    return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`
-  }
 
   function youIcon() {
     return L.divIcon({
@@ -202,7 +198,7 @@
         keyboard: false,
       })
         .addTo(markersLayer)
-        .bindTooltip(`Responder · ${distanceLabel(person.distance_m)} away`, {
+        .bindTooltip(`Responder · ${formatDistance(person.distance_m) || '—'} away`, {
           direction: 'top',
           offset: [0, -8],
         })
@@ -354,7 +350,7 @@
             {responders.length} responder{responders.length === 1 ? '' : 's'} nearby
           </p>
           <p class="text-[12.5px] leading-tight text-muted">
-            Closest is {distanceLabel(closest)} away · positions approximate
+            Closest is {formatDistance(closest) || '—'} away · positions approximate
           </p>
         {:else}
           <p class="text-[13.5px] font-semibold leading-tight text-ink">No responders nearby</p>

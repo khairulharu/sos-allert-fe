@@ -285,7 +285,13 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   and starts tracking the user's active alert; trigger passes the new id through
   `ontrack`. It also polls `GET /api/sos/inbox` every 12 s: alerts already
   present on the first poll show as a banner, new alerts auto-open the sheet,
-  and dismissing records the id so it is not shown again. A tapped push
+  and dismissing records the id so it is not shown again. The alert the sheet is
+  showing is matched against `active`, **not** against the masked `visible`
+  list: once this user responds the payload stops being masked and leaves
+  `visible`, so matching there froze the sheet on the pre-respond payload
+  (masked coordinates, ~100 m distance) for the rest of the incident. An alert
+  that leaves `active` closes the sheet, so a missed terminal WS frame no longer
+  leaves a frozen live view. A tapped push
   notification names its alert (`?alert=<id>` on a cold start, a `sos-alert`
   service-worker message while open), and that sheet opens immediately — without
   it the first poll only drew a banner, so tapping the notification appeared to
@@ -359,7 +365,11 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   It exposes `recenter()`. Draws the radius circle (dashed `#FF3B30`, 1.5 px,
   stroke 0.55 / fill 0.11; fullscreen uses stroke 0.50 / fill 0.06), blue own
   dot, generic masked responder pins, and a pulsing red pin that follows
-  `LOCATION_UPDATE`; the live pin is removed on terminal status. A
+  `LOCATION_UPDATE`. On a terminal status the pin is **dimmed and kept** as
+  "Last seen · alert ended" instead of being removed: dropping it handed the
+  same spot to the responder's `nearby` pin (~100 m masked, 100 m distance
+  bucket) in the same instant, which read as the location teleporting when an
+  alert was resolved. A
   `ResizeObserver` re-measures the container (`map.invalidateSize()`) so the map
   survives being hidden and shown.
 - `src/lib/components/AlertIncoming.svelte` — real inbox alert sheet. Receives

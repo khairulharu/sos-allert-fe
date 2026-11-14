@@ -122,10 +122,12 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   10 s audio evidence via `MediaRecorder` + multipart upload. **The SOS
   countdown is the audio window**: the 10 s between "Continue → Send SOS" and
   the trigger are recorded, the clip is classified before the alert goes out
-  (`POST /api/sos/classify`, nothing persisted), and the audio-derived
-  `emergency_type`/`severity`/`summary` ride in the `POST /api/sos` body — so the
-  **first fan-out already uses the level from the speech**, not the typed
-  description. The clip is then uploaded to `POST /api/sos/:alertId/media` as the
+  (`POST /api/sos/classify`, nothing persisted). Only the audio-derived
+  `emergency_type` rides in the `POST /api/sos` body: the server caches the
+  classify result for 2 minutes (single use) and derives `severity`/`summary` +
+  the adaptive radius from it — so the **first fan-out already uses the level
+  from the speech**, not the typed description, and the client cannot set the
+  triage. The clip is then uploaded to `POST /api/sos/:alertId/media` as the
   evidence responders can listen to; if that transcript raises the severity, the
   backend widens the radius and the screen shows `escalated`/`recipients_added`.
   The active screen shows the transcript and follows re-classifications
@@ -588,12 +590,14 @@ Whisper endpoint (default Groq `whisper-large-v3-turbo`, language `id`).
 
 `POST /api/sos/classify` takes the same multipart `file` field before the alert
 exists and returns `emergency_type`/`severity`/`summary` (+`transcript`,
-`transcription_status`) without persisting anything. `AlertFlow` calls it with
-the countdown clip and sends those three values in the trigger body, where they
-win over the description triage and pick the adaptive radius — so the first
-fan-out is already based on the speech. `503` (STT off), `502` (provider failed),
-`400` and network errors just fall back to the description triage: the SOS goes
-out either way, and the media upload then re-classifies from the same clip.
+`transcription_status`) without persisting anything. The server caches that
+result for the same user for 2 minutes, single use, and the next trigger picks
+it up automatically, so `AlertFlow` sends only the audio-derived
+`emergency_type` in the trigger body — never `severity`/`summary` (the legacy
+names are ignored server-side; triage and radius are always the server's).
+`429` (10 calls/hour), `503` (STT off), `502` (provider failed), `400` and
+network errors just fall back to the description triage: the SOS goes out
+either way, and the media upload then re-classifies from the same clip.
 
 `src/lib/tracking.js` folds `ALERT_TRIAGE` into the `triage` field of the
 tracking store; `AlertFlow` applies it to the triage card (header, severity bar

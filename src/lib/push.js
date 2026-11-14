@@ -9,6 +9,7 @@ export const PUSH_HELP = {
   unsupported: 'This browser cannot show push notifications.',
   denied: 'Notifications are blocked. Allow them for this site (padlock icon → Notifications → Allow).',
   error: 'Could not enable notifications. Try again.',
+  blocked: 'This browser’s push service is not supported by the server.',
 }
 
 // 'insecure' | 'unsupported' | null
@@ -82,6 +83,9 @@ export async function enablePush() {
     })
     return { ok: true }
   } catch (err) {
+    // 400 = the backend rejects this browser's push endpoint (allowlist, F-9).
+    // Retrying cannot fix it, so say so instead of "try again".
+    if (err?.status === 400) return { ok: false, reason: 'blocked', message: PUSH_HELP.blocked }
     return { ok: false, reason: err?.name === 'NotAllowedError' ? 'denied' : 'error', message: err?.message || PUSH_HELP.error }
   }
 }

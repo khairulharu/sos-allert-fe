@@ -70,7 +70,12 @@
       .mediaBlob(id, media.id)
       .then((blob) => {
         if (mine !== generation) return
-        const url = URL.createObjectURL(blob)
+        // The stream is served as an attachment and off-allowlist types come
+        // back as application/octet-stream, which a player may refuse to play.
+        // Re-wrap with the content type the list already reported.
+        const type =
+          blob.type && blob.type !== 'application/octet-stream' ? blob.type : media.content_type || ''
+        const url = URL.createObjectURL(type ? new Blob([blob], { type }) : blob)
         objectUrls.set(media.id, url)
         blobs[media.id] = { url, video: isVideo(media) }
       })

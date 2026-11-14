@@ -57,6 +57,11 @@ let nearbyEpoch = 0
 let fix = null
 let fixInFlight = null
 let watchId = null
+// Bumped by stopPositionWatch(). A geolocation callback already queued when the
+// session was torn down must not write `fix`/`liveFix` afterwards: that would
+// hand the next session (or the signed-out UI) a position this tab no longer
+// owns. Same generation guard the nearby poller and the heartbeat use.
+let fixEpoch = 0
 
 /** Newest fix from the continuous watch: { latitude, longitude, accuracy, at }. */
 export const liveFix = writable(null)
@@ -84,19 +89,25 @@ function rememberFix(pos) {
 // says how far off it may be).
 export function startPositionWatch() {
   if (watchId != null || typeof navigator === 'undefined' || !navigator.geolocation) return
+  const epoch = fixEpoch
   watchId = navigator.geolocation.watchPosition(
-    (pos) => rememberFix(pos),
+    (pos) => {
+      if (epoch !== fixEpoch) return
+      rememberFix(pos)
+    },
     () => {}, // keep the last fix; its age and accuracy say how much to trust it
     { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 },
   )
 }
 
 export function stopPositionWatch() {
+  fixEpoch += 1
   if (watchId != null && typeof navigator !== 'undefined' && navigator.geolocation) {
     navigator.geolocation.clearWatch(watchId)
   }
   watchId = null
   fix = null
+  fixInFlight = null
   liveFix.set(null)
 }
 
@@ -107,16 +118,29 @@ export function browserPosition({ timeout = 8000, maxAge = FIX_MAX_AGE_MS } = {}
   }
   if (fixInFlight) return fixInFlight
 
+  const epoch = fixEpoch
   const task = new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve(rememberFix(pos)),
+      (pos) => {
+        // The session ended while the device was acquiring: report "no fix"
+        // rather than repopulating the stores of a session that is gone.
+        if (epoch !== fixEpoch) {
+          resolve(null)
+          return
+        }
+        resolve(rememberFix(pos))
+      },
       // No fix is better than an old one reported as current.
       () => resolve(null),
       { enableHighAccuracy: true, timeout, maximumAge: 0 },
     )
   })
-  fixInFlight = task.finally(() => (fixInFlight = null))
-  return fixInFlight
+  fixInFlight = task
+  const clear = () => {
+    if (fixInFlight === task) fixInFlight = null
+  }
+  task.then(clear, clear)
+  return task
 }
 
 // Drives the header/Profile label off the heartbeat. A transient `own = null`

@@ -8,9 +8,6 @@ export const session = writable({
   loading: false,
 })
 
-// Last AI triage result from a triggered SOS (shown in the alert flow).
-export const lastTriage = writable(null)
-
 // Profile → "Live location". Off means the app stops publishing the heartbeat,
 // so the account really leaves nearby responder lists; a switch that only
 // changed its own state would be a lie about a privacy control.
@@ -60,7 +57,12 @@ export async function login(id, password) {
   session.update((s) => ({ ...s, loading: true }))
   try {
     const data = await auth.login(id, password)
-    const token = data?.token || id
+    // The session token is the one the backend returned — never the user id.
+    // `data.token || id` was the same mistake that made every authenticated
+    // request 401 once (see restoreSession below), so a response without a
+    // token is a failed sign-in, not something to paper over.
+    const token = data?.token
+    if (!token) throw new Error('Sign in failed: the server did not return a session token.')
     setToken(token)
     const profile = await hydrateUser(token)
     const user = profile || { id, ...(data || {}) }
@@ -115,9 +117,4 @@ export function restoreSession() {
     return user
   }
   return null
-}
-
-export function setSessionUser(user) {
-  setStoredUser(user)
-  session.update((s) => ({ ...s, user }))
 }

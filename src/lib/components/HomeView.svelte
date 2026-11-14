@@ -111,8 +111,8 @@
   let mapRef = $state(null)
   // The radius control used to only show/hide the circle while the search
   // stayed at 1 km; now it switches the search itself, so the count and the
-  // circle cannot disagree.
-  const radiusOn = $derived($nearbyRadius > 0)
+  // circle cannot disagree. The circle is always drawn at the current search
+  // radius (there is no separate show/hide toggle on this screen).
   const wideRadius = $derived($nearbyRadius >= NEARBY_RADIUS_MAX_M)
 
   function recenter() {
@@ -137,7 +137,7 @@
     own={$liveFix ?? $own}
     live={live}
     radiusM={$nearbyRadius}
-    radiusVisible={radiusOn}
+    radiusVisible={true}
   />
 
   <!-- Full-bleed top bar, then the overlays that flow underneath it. Only the
@@ -204,7 +204,7 @@
           <span class="min-w-0 truncate" aria-live="polite">· {responderCount}</span>
         </p>
       </div>
-      <p class="mt-2 text-right text-[11px] leading-none text-muted">
+      <p class="mt-2 text-right text-[12px] leading-none text-muted">
         <a
           class="pointer-events-auto underline decoration-muted/40 underline-offset-2"
           href="https://www.openstreetmap.org/copyright"

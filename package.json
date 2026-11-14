@@ -10,7 +10,10 @@
     "test:signout": "node scripts/test-signout-401.mjs",
     "test:radius": "node scripts/test-radius-toggle.mjs",
     "test:media": "node scripts/test-media-player.mjs",
-    "test:ws": "node scripts/test-ws-auth.mjs"
+    "test:ws": "node scripts/test-ws-auth.mjs",
+    "test:push": "node scripts/test-push-click.mjs",
+    "test:session": "node scripts/test-session-401.mjs",
+    "test:resolve": "node scripts/test-resolve-failure.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

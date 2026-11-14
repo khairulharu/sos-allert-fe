@@ -20,7 +20,7 @@
   import { MIC_HELP, micBlockReason, micErrorText } from '$lib/mic.js'
   import { sendBreadcrumb } from '$lib/tracking.js'
   import { browserPosition, liveFix, startPositionWatch } from '$lib/geo.js'
-  import { initialsFor, responderMeta, severityWord } from '$lib/alertMeta.js'
+  import { initialsFor, responderMeta, severityRadiusM, severityTier, severityWord } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
   import { trap } from '$lib/focus.js'
 
@@ -50,6 +50,11 @@
   // the responder block says so instead of silently retrying forever.
   let detailUnavailable = $state(false)
   let confirming = $state(false)
+  // Two-tap "I'm safe" is a lie if the backend never acknowledged it: the alert
+  // would stay live while the screen claims it ended, so the resolve request gets
+  // its own in-flight state and a visible failure instead of a silent catch.
+  let resolving = $state(false)
+  let resolveError = $state('')
   let errorMsg = $state('')
   let rateLimited = $state(false)
 
@@ -104,11 +109,16 @@
   // overflowed and read as a second, overlapping copy of the label underneath.
   const TRIAGE_ICONS = { MEDICAL: HeartPulse, ACCIDENT: Car, DANGER: AlertTriangle }
   const TypeIcon = $derived(TRIAGE_ICONS[triageResult?.emergency_type] || AlertTriangle)
-  // Same tiers as the radius copy below the severity bar, so the circle on the
-  // map matches what the text claims.
-  const fanoutRadiusM = $derived(
-    triageResult?.severity >= 0.67 ? 5000 : triageResult?.severity >= 0.34 ? 2000 : 1000,
-  )
+  // One tier table (src/lib/alertMeta.js) rules the severity word, the bar colour
+  // and the radius copy, so the circle on the map can never claim a fan-out the
+  // text beside it does not.
+  const triageTier = $derived(severityTier(triageResult?.severity))
+  const fanoutRadiusM = $derived(triageTier?.radiusM ?? 1000)
+  const FANOUT_COPY = {
+    5000: 'the widest responder radius (5 km)',
+    2000: 'the mid responder radius (2 km)',
+    1000: 'the closest responders (1 km)',
+  }
   // The sender's own position for the map: the live tracking frame once the
   // socket reports, the shared browser fix before that.
   const mapPosition = $derived.by(() => {
@@ -128,7 +138,12 @@
   function pad(v) { return String(v).padStart(2, '0') }
   function elapsedLabel(s) { return `${pad(Math.floor(s / 60))}:${pad(s % 60)}` }
   function sevLabel(s) { return severityWord(s) }
-  function sevColor(s) { return s >= 0.67 ? 'text-[#FF8080]' : s >= 0.34 ? 'text-[#FFD580]' : 'text-[#A8E6CF]' }
+  function sevColor(s) {
+    const radius = severityRadiusM(s)
+    if (radius == null) return 'text-[#A8E6CF]'
+    return radius >= 5000 ? 'text-[#FF8080]' : radius >= 2000 ? 'text-[#FFD580]' : 'text-[#A8E6CF]'
+  }
+  function radiusText(m) { return m >= 1000 ? `${m / 1000} km` : `${m} m` }
   // Tailwind cannot generate a class from a runtime percentage, so the bar
   // width has to be an inline style — the old `w-[${…}%]` class never existed in
   // the compiled CSS and the bar stayed empty for every severity.
@@ -304,7 +319,27 @@
 
   async function doResolve() {
     if (!alertId) { phase = 'ended'; return }
-    try { await sosApi.resolve(alertId) } catch { /* best-effort */ }
+    if (resolving) return
+    resolving = true
+    resolveError = ''
+    try {
+      await sosApi.resolve(alertId)
+    } catch (err) {
+      // A 404 is not a failure to hide: the incident is already gone, so there is
+      // nothing left to end. Anything else means it is STILL ACTIVE on the
+      // backend (network, 401, 5xx) — stay on this screen and say so.
+      if (err?.status === 404) {
+        resolveError = ''
+      } else {
+        resolving = false
+        resolveError =
+          err?.message && !/^HTTP \d+$/.test(err.message)
+            ? `Could not end the alert: ${err.message} Try again.`
+            : 'Could not end the alert. Check your connection and try again.'
+        return
+      }
+    }
+    resolving = false
     phase = 'ended'
   }
 
@@ -319,6 +354,7 @@
   }
 
   function endAlert() {
+    if (resolving) return
     if (!confirming) { confirming = true; return }
     confirming = false
     doResolve()
@@ -656,6 +692,8 @@
     if (phase !== 'active') return
     if (liveStatus === 'ACKNOWLEDGED') acknowledged = true
     if (liveStatus === 'RESOLVED' || liveStatus === 'CANCELLED' || liveStatus === 'EXPIRED') {
+      // Terminal state from the server wins over a local resolve failure.
+      resolveError = ''
       phase = 'ended'
     }
   })
@@ -953,13 +991,12 @@
                   style="width: {sevWidth(triageResult.severity)}"
                 ></div>
               </div>
-              <p class="mt-1.5 text-[11px] text-white/55">
-                {#if triageResult.severity >= 0.67}
-                  High priority — dispatching to the widest responder radius (5 km).
-                {:else if triageResult.severity >= 0.34}
-                  Medium priority — dispatching to the mid responder radius (2 km).
+              <p class="mt-1.5 text-[12px] text-white/55">
+                {#if triageTier}
+                  {triageTier.word} priority — dispatching to {FANOUT_COPY[triageTier.radiusM] ||
+                    FANOUT_COPY[1000]}.
                 {:else}
-                  Low priority — dispatching to the closest responders (1 km).
+                  Dispatching to the closest responders (1 km).
                 {/if}
               </p>
             </div>
@@ -992,7 +1029,7 @@
           </div>
 
           {#if classifyError && !triageFromAudio}
-            <p class="mt-2 text-[11px] leading-snug text-white/55">
+            <p class="mt-2 text-[12px] leading-snug text-white/55">
               Pre-trigger audio classification unavailable ({classifyError}) — this level came from
               your description.
             </p>
@@ -1107,18 +1144,18 @@
       {/if}
 
       {#if liveConnection === 'reconnecting'}
-        <p class="mt-2 text-[11px] font-medium text-[#FFD580]">
+        <p class="mt-2 text-[12px] font-medium text-[#FFD580]">
           Live connection lost — reconnecting…
         </p>
       {:else if liveConnection === 'error'}
-        <p class="mt-2 text-[11px] font-medium text-[#FF8080]">{live?.lastError || 'Live connection unavailable.'}</p>
+        <p class="mt-2 text-[12px] font-medium text-[#FF8080]">{live?.lastError || 'Live connection unavailable.'}</p>
       {/if}
 
       <div class="mt-2.5 rounded-2xl bg-white/[0.05] px-4 py-3 ring-1 ring-white/[0.06]">
         <p class="text-[12.5px] leading-relaxed text-white/60">
-          {#if triageResult?.severity != null && Number.isFinite(Number(triageResult.severity))}
+          {#if triageTier}
             Nearby responders were notified in a <span class="font-semibold text-white/80"
-              >{triageResult.severity >= 0.67 ? '5 km' : triageResult.severity >= 0.34 ? '2 km' : '1 km'}</span
+              >{radiusText(triageTier.radiusM)}</span
             > radius based on the AI severity score.
           {:else}
             This alert was not classified, so responders were notified in the
@@ -1165,14 +1202,29 @@
         <button
           type="button"
           onclick={endAlert}
-          class="flex w-full items-center justify-center gap-2 rounded-full py-3.5 text-[13.5px] font-semibold ring-1 transition {confirming
+          disabled={resolving}
+          aria-busy={resolving}
+          class="flex w-full items-center justify-center gap-2 rounded-full py-3.5 text-[13.5px] font-semibold ring-1 transition disabled:opacity-70 {confirming
             ? 'bg-sos text-white ring-sos'
             : 'bg-white/[0.04] text-white/80 ring-white/10 hover:bg-white/[0.08]'}"
         >
-          <ShieldCheck size={15} />
-          {confirming ? 'Tap again to end alert' : "I'm safe — end alert"}
+          {#if resolving}
+            <Loader2 size={15} class="animate-spin" />
+            Ending alert…
+          {:else}
+            <ShieldCheck size={15} />
+            {confirming ? 'Tap again to end alert' : "I'm safe — end alert"}
+          {/if}
         </button>
-        <p class="mt-2.5 text-center text-[11px] text-white/55">
+        {#if resolveError}
+          <p
+            role="alert"
+            class="mt-2 rounded-xl bg-sos/15 px-3 py-2 text-[12px] leading-snug text-[#FFB3B3] ring-1 ring-sos/25"
+          >
+            {resolveError}
+          </p>
+        {/if}
+        <p class="mt-2.5 text-center text-[12px] text-white/55">
           Ending the alert stops live location sharing.
         </p>
       </div>

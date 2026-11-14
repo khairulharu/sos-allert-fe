@@ -294,7 +294,7 @@
         {/if}
       </div>
 
-      <p class="mt-2 text-center text-[11px] leading-relaxed text-muted">
+      <p class="mt-2 text-center text-[12px] leading-relaxed text-muted">
         Only respond if it's safe to do so. Never put yourself at risk.
       </p>
     </div>

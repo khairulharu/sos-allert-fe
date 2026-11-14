@@ -11,7 +11,7 @@
   import AlertIncoming from '$lib/components/AlertIncoming.svelte'
   import AuthScreen from '$lib/components/AuthScreen.svelte'
   import { session, restoreSession, logout, locationSharing } from '$lib/stores.js'
-  import { location as locationApi, sos as sosApi, getSessionToken } from '$lib/api.js'
+  import { location as locationApi, sos as sosApi, getSessionToken, setUnauthorizedHandler } from '$lib/api.js'
   import {
     tracking,
     responderTracking,
@@ -57,12 +57,20 @@
   // Set when a 401 ends the session so the auth screen can say why the user is
   // back here instead of leaving it a mystery.
   let authNotice = $state('')
+  // Re-entry guard for onSessionExpired(): several in-flight requests can 401 at
+  // once, and the teardown must run exactly once.
+  let sessionEnding = false
 
   // Session gate: authenticated state.
   let authed = $state(false)
   let currentUser = $state(null)
 
   onMount(() => {
+    // Every 401 takes this one path, whichever view, poller or upload issued the
+    // request (see setUnauthorizedHandler in src/lib/api.js).
+    setUnauthorizedHandler(() => {
+      void onSessionExpired()
+    })
     // Arriving from a notification tap: the service worker appends the alert id
     // so the matching sheet opens instead of a bare banner. Clean the URL after.
     const wanted = new URLSearchParams(location.search).get('alert')
@@ -549,6 +557,11 @@
     // revoke whatever token another tab has logged in with since, and claim the
     // user was signed out when they were not.
     if (!getSessionToken()) return
+    // The 401 that started this can arrive from several places at once (a view,
+    // the nearby read, the inbox poll) and every one of them now reports through
+    // api.js, so only the first call runs the teardown.
+    if (sessionEnding) return
+    sessionEnding = true
     // The server no longer accepts this token: it was revoked by a sign-out or
     // replaced by another login (the account keeps one token server-side).
     authNotice = 'Your session ended — sign in again to keep getting SOS alerts.'
@@ -558,8 +571,12 @@
     stopNearbyPolling()
     stopLocationHeartbeat()
     stopTracking()
-    await disablePush()
-    await logout()
+    try {
+      await disablePush()
+      await logout()
+    } finally {
+      sessionEnding = false
+    }
     currentUser = null
   }
 </script>

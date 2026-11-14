@@ -80,8 +80,15 @@
     }
   }
 
-  function callNumber(person) {
-    if (person.phone_number) window.location.href = `tel:${person.phone_number}`
+  // A dialer/SMS URI needs a bare number. The old `encodeURIComponent` turned
+  // "+62 812 ..." into "sms:%2B62%20812...", which several clients open with an
+  // empty recipient, and a contact without a number still got two live controls.
+  function dialable(number) {
+    return String(number || '').replace(/[^\d+]/g, '')
+  }
+
+  function hasPhone(person) {
+    return dialable(person.phone_number).length > 0
   }
 </script>
 
@@ -229,21 +236,24 @@
             </div>
 
             <div class="flex shrink-0 items-center gap-1.5">
-              <a
-                href={'sms:' + encodeURIComponent(person.phone_number || '')}
-                aria-label={'Message ' + person.contact_name}
-                class="grid h-8 w-8 place-items-center rounded-full bg-[#E9F7F1] text-safe transition hover:bg-safe hover:text-white active:scale-95"
-              >
-                <MessageCircle size={14} />
-              </a>
-              <button
-                type="button"
-                aria-label="Call {person.contact_name}"
-                onclick={() => callNumber(person)}
-                class="grid h-8 w-8 place-items-center rounded-full bg-[#E9F7F1] text-safe transition hover:bg-safe hover:text-white active:scale-95"
-              >
-                <Phone size={13.5} />
-              </button>
+              {#if hasPhone(person)}
+                <a
+                  href={`sms:${dialable(person.phone_number)}`}
+                  aria-label={`Message ${person.contact_name}`}
+                  class="grid h-8 w-8 place-items-center rounded-full bg-[#E9F7F1] text-safe transition hover:bg-safe hover:text-white active:scale-95"
+                >
+                  <MessageCircle size={14} />
+                </a>
+                <a
+                  href={`tel:${dialable(person.phone_number)}`}
+                  aria-label={`Call ${person.contact_name}`}
+                  class="grid h-8 w-8 place-items-center rounded-full bg-[#E9F7F1] text-safe transition hover:bg-safe hover:text-white active:scale-95"
+                >
+                  <Phone size={13.5} />
+                </a>
+              {:else}
+                <span class="text-[12px] font-medium text-muted">No phone</span>
+              {/if}
             </div>
           </div>
         {/each}

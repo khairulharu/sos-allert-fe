@@ -18,6 +18,7 @@ import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright-core'
 import { createServer as createViteServer } from 'vite'
+import { MOBILE_VIEWPORT } from './mobile-viewport.mjs'
 
 const API_PORT = 3000
 const APP_PORT = 5173
@@ -115,7 +116,7 @@ try {
   })
   await vite.listen()
   browser = await chromium.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] })
-  const page = await browser.newPage()
+  const page = await browser.newPage({ viewport: MOBILE_VIEWPORT })
   await page.goto(APP_URL, { waitUntil: 'load' })
 
   // 1-3. A channel with a stored token, plus breadcrumbs sent too early.

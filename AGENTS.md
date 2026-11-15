@@ -811,7 +811,10 @@ browser at `http://localhost:5173` with the backend running.
 
 Seven behaviours are covered by regression scripts (six run the real app
 against a mock API on :3000 via the Vite dev server and headless Chrome;
-`test:push` needs no browser), and CI runs all of them:
+`test:push` needs no browser), and CI runs all of them. Every browser script
+drives a 390×844 phone viewport (`scripts/mobile-viewport.mjs`): the desktop
+showcase hides the mobile shell from 1024 px up, so Playwright's default
+1280×720 context resolves the auth fields but reports them invisible.
 
 - `npm run test:signout` — sign-out with a location request in flight leaves no
   unauthenticated request behind (issue #6).

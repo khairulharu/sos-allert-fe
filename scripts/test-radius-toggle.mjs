@@ -20,6 +20,7 @@ import http from 'node:http'
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright-core'
 import { createServer as createViteServer } from 'vite'
+import { MOBILE_VIEWPORT } from './mobile-viewport.mjs'
 
 const API_PORT = 3000
 const APP_PORT = 5173
@@ -193,6 +194,7 @@ async function raceScenario() {
     geolocation: { latitude: -6.2, longitude: 106.8 },
     permissions: ['geolocation'],
     serviceWorkers: 'block',
+    viewport: MOBILE_VIEWPORT,
   })
   const page = await context.newPage()
   try {
@@ -247,6 +249,7 @@ async function toggleBackScenario() {
     geolocation: { latitude: -6.2, longitude: 106.8 },
     permissions: ['geolocation'],
     serviceWorkers: 'block',
+    viewport: MOBILE_VIEWPORT,
   })
   const page = await context.newPage()
   try {

@@ -10,6 +10,7 @@
   import AlertFlow from '$lib/components/AlertFlow.svelte'
   import AlertIncoming from '$lib/components/AlertIncoming.svelte'
   import AuthScreen from '$lib/components/AuthScreen.svelte'
+  import DesktopLanding from '$lib/components/DesktopLanding.svelte'
   import { session, restoreSession, logout, locationSharing } from '$lib/stores.js'
   import { location as locationApi, sos as sosApi, getSessionToken, setUnauthorizedHandler } from '$lib/api.js'
   import {
@@ -64,8 +65,16 @@
   // Session gate: authenticated state.
   let authed = $state(false)
   let currentUser = $state(null)
+  // Desktop showcase mode: on desktop viewports (>= 1024px) we show the
+  // dedicated mobile-only introduction & feature showcase by default, while
+  // allowing an explicit toggle into the interactive mobile shell preview.
+  let mobilePreview = $state(false)
 
   onMount(() => {
+    const params = new URLSearchParams(location.search)
+    if (params.get('mode') === 'mobile' || params.get('alert')) {
+      mobilePreview = true
+    }
     // Every 401 takes this one path, whichever view, poller or upload issued the
     // request (see setUnauthorizedHandler in src/lib/api.js).
     setUnauthorizedHandler(() => {
@@ -73,7 +82,7 @@
     })
     // Arriving from a notification tap: the service worker appends the alert id
     // so the matching sheet opens instead of a bare banner. Clean the URL after.
-    const wanted = new URLSearchParams(location.search).get('alert')
+    const wanted = params.get('alert')
     if (wanted) {
       focusAlertId = wanted
       history.replaceState({}, '', location.pathname + location.hash)
@@ -585,105 +594,125 @@
   <meta name="description" content="SOS Alert — a community safety app that gets help to you in seconds." />
 </svelte:head>
 
-{#if !authed}
-  <AuthScreen onsuccess={onAuthSuccess} notice={authNotice} />
-{:else}
-  <div class="relative flex min-h-dvh w-full items-center justify-center overflow-hidden bg-[#E7E9ED]">
-    <!-- ambient backdrop -->
-    <div class="pointer-events-none absolute inset-0 hidden sm:block">
-      <div class="absolute left-1/2 top-1/2 h-[760px] w-[760px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/60 blur-3xl"></div>
-      <div class="absolute -left-24 top-10 h-80 w-80 rounded-full bg-[#FF3B30]/10 blur-3xl"></div>
-      <div class="absolute -right-20 bottom-0 h-96 w-96 rounded-full bg-[#2F6BFF]/10 blur-3xl"></div>
-    </div>
-
-    <!-- app shell -->
-    <div
-      class="relative z-10 flex h-dvh w-full max-w-[430px] flex-col overflow-hidden bg-canvas sm:h-[min(884px,calc(100dvh_-_32px))] sm:rounded-[44px] sm:ring-1 sm:ring-black/10 sm:shadow-[0_50px_120px_-40px_rgba(13,15,19,0.55)]"
-    >
-      <main
-        bind:this={scrollEl}
-        inert={modalOpen}
-        class="relative min-h-0 flex-1 no-scrollbar {tab === 'home'
-          ? 'overflow-hidden'
-          : 'overflow-y-auto pb-36'}"
-      >
-        <!-- Home stays mounted (hidden, not destroyed) so returning to it does
-             not rebuild the Leaflet map or restart the location flow. It fills
-             the viewport: its map runs edge to edge under the floating nav. -->
-        <div class="h-full" class:hidden={tab !== 'home'}>
-          <HomeView
-            user={currentUser}
-            onnavigate={navigate}
-            incoming={pendingAlert}
-            onviewalert={() => (incomingOpen = true)}
-            ondismissincoming={dismissIncoming}
-            coords={coords}
-            live={mapLive}
-          />
-        </div>
-
-        {#key tab}
-          {#if tab !== 'home'}
-            <div in:fly={{ y: 10, duration: 260, opacity: 0.4 }}>
-              {#if tab === 'alerts'}
-                <AlertsView />
-              {:else if tab === 'contacts'}
-                <ContactsView />
-              {:else}
-                <ProfileView user={currentUser} onsignout={onSignOut} />
-              {/if}
-            </div>
-          {/if}
-        {/key}
-      </main>
-
-      <div
-        class="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-32 bg-gradient-to-t from-canvas via-canvas/85 to-transparent"
-      ></div>
-
-      <div inert={modalOpen}>
-        <BottomNav active={tab} onnavigate={navigate} onsos={() => (sosOpen = true)} />
-      </div>
-
-      <!-- The live region exists before any message so a screen reader announces
-           the status instead of dropping a node that appeared with text in it. -->
-      <div
-        role="status"
-        aria-live="polite"
-        class="pointer-events-none absolute bottom-[112px] left-1/2 z-40 w-max max-w-[320px] -translate-x-1/2"
-      >
-        {#if toast}
-          <p
-            class="animate-rise rounded-full bg-ink/92 px-4 py-2.5 text-center text-[13px] font-medium text-white shadow-xl ring-1 ring-white/10 backdrop-blur"
-          >
-            {toast}
-          </p>
-        {/if}
-      </div>
-
-      {#if incomingOpen && pendingAlert}
-        <AlertIncoming
-          alert={pendingAlert}
-          own={coords}
-          live={responderTrack}
-          responded={respondedAlert}
-          youId={currentUser?.id}
-          busy={responding}
-          error={respondError}
-          onclose={dismissIncoming}
-          onrespond={respondToAlert}
-        />
-      {/if}
-
-      {#if sosOpen}
-        <AlertFlow
-          onclose={() => (sosOpen = false)}
-          onnotify={notify}
-          ontrack={handleTrack}
-          live={liveTrack}
-          coords={coords}
-        />
-      {/if}
-    </div>
+{#if !mobilePreview}
+  <div class="hidden lg:block">
+    <DesktopLanding onpreview={() => (mobilePreview = true)} />
   </div>
 {/if}
+
+<div class={mobilePreview ? 'block' : 'block lg:hidden'}>
+  {#if mobilePreview}
+    <div class="fixed left-4 top-4 z-50 hidden lg:block">
+      <button
+        type="button"
+        onclick={() => (mobilePreview = false)}
+        class="inline-flex items-center gap-2 rounded-full bg-ink/90 px-4 py-2 text-[12.5px] font-semibold text-white shadow-lg ring-1 ring-white/15 backdrop-blur transition hover:bg-ink active:scale-95"
+      >
+        ← Kembali ke Tampilan Info Desktop
+      </button>
+    </div>
+  {/if}
+
+  {#if !authed}
+    <AuthScreen onsuccess={onAuthSuccess} notice={authNotice} />
+  {:else}
+    <div class="relative flex min-h-dvh w-full items-center justify-center overflow-hidden bg-[#E7E9ED]">
+      <!-- ambient backdrop -->
+      <div class="pointer-events-none absolute inset-0 hidden sm:block">
+        <div class="absolute left-1/2 top-1/2 h-[760px] w-[760px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/60 blur-3xl"></div>
+        <div class="absolute -left-24 top-10 h-80 w-80 rounded-full bg-[#FF3B30]/10 blur-3xl"></div>
+        <div class="absolute -right-20 bottom-0 h-96 w-96 rounded-full bg-[#2F6BFF]/10 blur-3xl"></div>
+      </div>
+
+      <!-- app shell -->
+      <div
+        class="relative z-10 flex h-dvh w-full max-w-[430px] flex-col overflow-hidden bg-canvas sm:h-[min(884px,calc(100dvh_-_32px))] sm:rounded-[44px] sm:ring-1 sm:ring-black/10 sm:shadow-[0_50px_120px_-40px_rgba(13,15,19,0.55)]"
+      >
+        <main
+          bind:this={scrollEl}
+          inert={modalOpen}
+          class="relative min-h-0 flex-1 no-scrollbar {tab === 'home'
+            ? 'overflow-hidden'
+            : 'overflow-y-auto pb-36'}"
+        >
+          <!-- Home stays mounted (hidden, not destroyed) so returning to it does
+               not rebuild the Leaflet map or restart the location flow. It fills
+               the viewport: its map runs edge to edge under the floating nav. -->
+          <div class="h-full" class:hidden={tab !== 'home'}>
+            <HomeView
+              user={currentUser}
+              onnavigate={navigate}
+              incoming={pendingAlert}
+              onviewalert={() => (incomingOpen = true)}
+              ondismissincoming={dismissIncoming}
+              coords={coords}
+              live={mapLive}
+            />
+          </div>
+
+          {#key tab}
+            {#if tab !== 'home'}
+              <div in:fly={{ y: 10, duration: 260, opacity: 0.4 }}>
+                {#if tab === 'alerts'}
+                  <AlertsView />
+                {:else if tab === 'contacts'}
+                  <ContactsView />
+                {:else}
+                  <ProfileView user={currentUser} onsignout={onSignOut} />
+                {/if}
+              </div>
+            {/if}
+          {/key}
+        </main>
+
+        <div
+          class="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-32 bg-gradient-to-t from-canvas via-canvas/85 to-transparent"
+        ></div>
+
+        <div inert={modalOpen}>
+          <BottomNav active={tab} onnavigate={navigate} onsos={() => (sosOpen = true)} />
+        </div>
+
+        <!-- The live region exists before any message so a screen reader announces
+             the status instead of dropping a node that appeared with text in it. -->
+        <div
+          role="status"
+          aria-live="polite"
+          class="pointer-events-none absolute bottom-[112px] left-1/2 z-40 w-max max-w-[320px] -translate-x-1/2"
+        >
+          {#if toast}
+            <p
+              class="animate-rise rounded-full bg-ink/92 px-4 py-2.5 text-center text-[13px] font-medium text-white shadow-xl ring-1 ring-white/10 backdrop-blur"
+            >
+              {toast}
+            </p>
+          {/if}
+        </div>
+
+        {#if incomingOpen && pendingAlert}
+          <AlertIncoming
+            alert={pendingAlert}
+            own={coords}
+            live={responderTrack}
+            responded={respondedAlert}
+            youId={currentUser?.id}
+            busy={responding}
+            error={respondError}
+            onclose={dismissIncoming}
+            onrespond={respondToAlert}
+          />
+        {/if}
+
+        {#if sosOpen}
+          <AlertFlow
+            onclose={() => (sosOpen = false)}
+            onnotify={notify}
+            ontrack={handleTrack}
+            live={liveTrack}
+            coords={coords}
+          />
+        {/if}
+      </div>
+    </div>
+  {/if}
+</div>

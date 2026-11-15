@@ -12,6 +12,12 @@
   let addError = $state('')
   let form = $state({ contact_name: '', phone_number: '', relationship: '' })
 
+  // Backend contract (fix #41): E.164 numbers only and the Tier-1 list is
+  // capped at 10 per user — every contact is an SMS/voice target on each
+  // alert. The cap is shown up front so the user learns it from the screen,
+  // not from a 422.
+  const MAX_CONTACTS = 10
+
   const list = $derived(
     contacts_list.filter((person) => person.contact_name?.toLowerCase().includes(query.toLowerCase().trim())),
   )
@@ -57,6 +63,10 @@
   }
 
   async function createContact() {
+    if (contacts_list.length >= MAX_CONTACTS) {
+      addError = 'Contact limit reached.'
+      return
+    }
     if (!form.contact_name?.trim() || !form.phone_number?.trim()) {
       addError = 'Name and phone are required.'
       return
@@ -116,6 +126,11 @@
   <!-- add form -->
   {#if adding}
     <div class="card mt-4 space-y-2.5 p-4">
+      {#if contacts_list.length >= MAX_CONTACTS}
+        <p class="text-[12.5px] font-medium text-muted" role="status">
+          You've reached the limit of {MAX_CONTACTS} contacts. This keeps SOS text messages fast and affordable.
+        </p>
+      {:else}
       <div>
         <label for="contact-name" class="mb-1 block text-[12px] font-semibold uppercase tracking-wide text-muted">Name</label>
         <input
@@ -135,6 +150,9 @@
           placeholder="+62 812 3456 7890"
           class="w-full rounded-xl bg-[#F5F6F8] px-3 py-2.5 text-[16px] leading-tight font-medium text-ink outline-none ring-1 ring-black/5 placeholder:text-muted/70 focus:ring-2 focus:ring-ink/15"
         />
+        <p class="mt-1 text-[11.5px] leading-snug text-muted">
+          International format with country code, e.g. +62 812 3456 7890. Spaces and dashes are fine.
+        </p>
       </div>
       <div>
         <label for="contact-relationship" class="mb-1 block text-[12px] font-semibold uppercase tracking-wide text-muted">Relationship</label>
@@ -163,6 +181,7 @@
           Save contact
         {/if}
       </button>
+      {/if}
     </div>
   {/if}
 
@@ -182,7 +201,9 @@
   <section class="mt-5">
     <div class="flex items-center justify-between px-0.5">
       <h2 class="eyebrow text-ink/60">Trusted people</h2>
-      <span class="text-[12px] font-medium text-muted">{list.length} {list.length === 1 ? 'contact' : 'contacts'}</span>
+      <span class="text-[12px] font-medium text-muted"
+        >{contacts_list.length}/{MAX_CONTACTS} {contacts_list.length === 1 ? 'contact' : 'contacts'}</span
+      >
     </div>
 
     <div class="card mt-2.5 divide-y divide-line/80 overflow-hidden">

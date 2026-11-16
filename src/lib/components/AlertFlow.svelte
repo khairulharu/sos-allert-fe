@@ -13,6 +13,7 @@
     Car,
     Loader2,
     AlertTriangle,
+    ScanSearch,
     Mic,
   } from '@lucide/svelte'
   import { sos as sosApi } from '$lib/api.js'
@@ -22,6 +23,7 @@
   import { browserPosition, liveFix, startPositionWatch } from '$lib/geo.js'
   import { initialsFor, responderMeta, severityRadiusM, severityTier, severityWord } from '$lib/alertMeta.js'
   import { retrySeconds, formatCooldown } from '$lib/rateLimit.js'
+  import { normalizeTriage } from '$lib/triage.js'
   import { trap } from '$lib/focus.js'
 
   let {
@@ -71,6 +73,9 @@
   let capturePromise = null
   let transcript = $state('')
   let transcriptionStatus = $state('')
+  // The media row the transcript belongs to, once the upload answers. The panel
+  // describes this clip only; a new SOS clears it with the rest of the state.
+  let clipMediaId = $state(null)
   let triageFromAudio = $state(false)
   // Pre-trigger classification (POST /api/sos/classify) and the fan-out the
   // backend widened when the audio raised the severity after the trigger.
@@ -108,7 +113,11 @@
   // The badge used to print the raw enum (ACCIDENT) inside a 36px box, where it
   // overflowed and read as a second, overlapping copy of the label underneath.
   const TRIAGE_ICONS = { MEDICAL: HeartPulse, ACCIDENT: Car, DANGER: AlertTriangle }
-  const TypeIcon = $derived(TRIAGE_ICONS[triageResult?.emergency_type] || AlertTriangle)
+  // No type is not the same as a danger: an unknown classification gets a
+  // neutral mark instead of the warning triangle.
+  const TypeIcon = $derived(
+    triageResult?.emergency_type ? TRIAGE_ICONS[triageResult.emergency_type] : ScanSearch,
+  )
   // One tier table (src/lib/alertMeta.js) rules the severity word, the bar colour
   // and the radius copy, so the circle on the map can never claim a fan-out the
   // text beside it does not.
@@ -158,20 +167,49 @@
   // Both land here, so the card, the severity bar and the radius copy all
   // follow the newest classification.
   //
-  // A payload with nothing to classify (STT disabled, no speech detected) only
-  // carries `transcription_status`, so it must not invent a level from the
-  // previous state nor claim the audio produced the level on screen.
+  // Only a payload carrying a real `emergency_type` is a classification. A
+  // silent clip comes back as `{emergency_type:"", severity:0,
+  // transcription_status:"empty"}` (#54), and `severity: 0` is a legitimate
+  // lowest score only once the type exists (#55). Nothing is borrowed from the
+  // previous payload: this is a snapshot, not a patch.
   function applyTriage(next, fromAudio = false) {
-    if (!next) return
-    const hasType = !!next.emergency_type
-    const hasSeverity = Number.isFinite(next.severity)
-    if (!hasType && !hasSeverity) return
-    triageResult = {
-      emergency_type: next.emergency_type || triageResult?.emergency_type || 'DANGER',
-      severity: hasSeverity ? next.severity : (triageResult?.severity ?? 0.5),
-      summary: next.summary || triageResult?.summary || '',
-    }
-    if (fromAudio) triageFromAudio = true
+    const normalized = normalizeTriage(next)
+    if (!normalized) return
+    triageResult = normalized
+    triageFromAudio = fromAudio
+  }
+
+  function sameTriage(a, b) {
+    return !!a && !!b && a.emergency_type === b.emergency_type && a.severity === b.severity
+  }
+
+  // A new SOS attempt starts from zero. The component can survive a failed
+  // trigger ("Try again"), so carrying the old transcript or type into the next
+  // clip is exactly the bug in #23/#54.
+  function resetFlowState() {
+    triageResult = null
+    triageFromAudio = false
+    transcript = ''
+    transcriptionStatus = ''
+    clipMediaId = null
+    classifyError = ''
+    escalated = false
+    recipientsAdded = 0
+    mediaState = 'idle'
+    mediaError = ''
+    audioAttached = false
+    respondersEnRoute = 0
+    respondersOnWay = []
+    detailUnavailable = false
+    alertId = ''
+    recipientsNotified = 0
+    triggeredAt = null
+    confirming = false
+    resolving = false
+    resolveError = ''
+    errorMsg = ''
+    elapsed = 0
+    acknowledged = false
   }
 
   const TRANSCRIPTION_NOTES = {
@@ -234,6 +272,11 @@
     capturePromise = null
     let audioTriage = null
     if (clip) {
+      // This is a new clip: never let the panel keep the previous clip's text
+      // while the new response is in flight (#54).
+      transcript = ''
+      transcriptionStatus = ''
+      clipMediaId = null
       classifying = true
       classifyError = ''
       try {
@@ -241,9 +284,14 @@
           clip.blob,
           `sos-classify-${Date.now()}.${clip.extension}`,
         )
-        if (classified?.emergency_type) audioTriage = classified
-        applyTriage(classified, true)
-        if (classified?.transcript) transcript = classified.transcript
+        const classifiedTriage = normalizeTriage(classified)
+        if (classifiedTriage) {
+          audioTriage = classifiedTriage
+          applyTriage(classifiedTriage, true)
+        }
+        // Assign as-is: a silent clip (transcription_status "empty") has no
+        // transcript, and an omitted field must clear the panel, not keep it.
+        transcript = classified?.transcript || ''
         transcriptionStatus = classified?.transcription_status || ''
       } catch (err) {
         // 429 (hourly classify quota) / 503 / 502 (STT off, provider down) /
@@ -273,8 +321,9 @@
       if (Number.isFinite(pos.accuracy)) fields.accuracy_meters = pos.accuracy
     }
     // Only the type: the server derives `severity`/`summary` itself (from the
-    // classify cache or the description) and ignores the legacy fields.
-    if (audioTriage?.emergency_type) fields.emergency_type = audioTriage.emergency_type
+    // classify cache or the description) and ignores the legacy fields. This is
+    // the normalised type from this attempt, never a leftover one.
+    if (audioTriage) fields.emergency_type = audioTriage.emergency_type
 
     let result
     try {
@@ -299,7 +348,11 @@
     detailUnavailable = false
     recipientsNotified = result.recipients_notified || 0
     triggeredAt = result.triggered_at ? new Date(result.triggered_at) : null
-    applyTriage(result.triage)
+    // The trigger response is authoritative. It still counts as "from your
+    // audio" when it echoes the classification the pre-trigger clip produced;
+    // a different type came from the description.
+    const triggerTriage = normalizeTriage(result.triage)
+    applyTriage(triggerTriage, sameTriage(triggerTriage, audioTriage))
     ontrack?.(result.alert_id, {
       status: result.status,
       latitude: pos?.lat,
@@ -510,7 +563,11 @@
       )
       if (destroyed) return
       mediaState = 'uploaded'
-      if (result?.transcript) transcript = result.transcript
+      // The media row is the authority for this clip: take its transcript and
+      // status as-is (an "empty" answer clears the text the classify pass may
+      // have shown) and remember which row the panel is describing.
+      clipMediaId = result?.id || null
+      transcript = result?.transcript || ''
       transcriptionStatus = result?.transcription_status || ''
       applyTriage(result?.triage, true)
       // The backend widens the fan-out when this transcript raises the
@@ -553,8 +610,10 @@
 
   function startCountdown() {
     if (!description.trim()) { description = 'Emergency'; }
+    // A retry starts a new alert from a clean slate: no triage, transcript or
+    // responder state from the attempt that failed.
+    resetFlowState()
     rateLimited = false
-    errorMsg = ''
     phase = 'count'
     countdown = total
     // Opens the microphone straight away: `total` seconds of audio is what the
@@ -959,12 +1018,12 @@
         <div class="p-3.5">
           <div class="flex items-center gap-2.5">
             <span class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/10">
-              <TypeIcon size={17} strokeWidth={2.2} class={triageResult ? (TRIAGE_COLORS[triageResult.emergency_type] || 'text-white') : 'text-white/60'} />
+              <TypeIcon size={17} strokeWidth={2.2} class={triageResult ? TRIAGE_COLORS[triageResult.emergency_type] : 'text-white/60'} />
             </span>
             <div class="min-w-0 flex-1">
               {#if triageResult}
                 <p class="text-[14px] font-semibold text-white">
-                  {TRIAGE_LABELS[triageResult.emergency_type] || triageResult.emergency_type}
+                  {TRIAGE_LABELS[triageResult.emergency_type]}
                 </p>
                 {#if triageResult.summary}
                   <p class="mt-0.5 text-[12px] leading-snug text-white/55">{triageResult.summary}</p>
@@ -972,14 +1031,14 @@
               {:else}
                 <p class="text-[14px] font-semibold text-white/80">Classification unavailable</p>
                 <p class="mt-0.5 text-[12px] leading-snug text-white/60">
-                  No AI classification came back for this alert, so responders were alerted with the
-                  default fan-out.
+                  No emergency type was classified for this alert, so responders were alerted with
+                  the default fan-out.
                 </p>
               {/if}
             </div>
           </div>
 
-          {#if triageResult}
+          {#if triageResult?.severity != null}
             <div class="mt-3">
               <div class="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.1em] text-white/55">
                 <span>Severity</span>
@@ -1008,6 +1067,11 @@
             </p>
             {#if transcript}
               <p class="mt-1 text-[13px] italic leading-relaxed text-white/80">“{transcript}”</p>
+              {#if !triageResult && (clipMediaId || mediaState === 'error')}
+                <p class="mt-1 text-[12px] leading-snug text-white/55">
+                  Transcript only — no emergency type was recognized from this clip.
+                </p>
+              {/if}
             {:else if transcriptionStatus && transcriptionStatus !== 'completed'}
               <p class="mt-1 text-[12px] leading-snug text-white/55">
                 {TRANSCRIPTION_NOTES[transcriptionStatus] || 'No transcript was returned.'}
@@ -1030,8 +1094,10 @@
 
           {#if classifyError && !triageFromAudio}
             <p class="mt-2 text-[12px] leading-snug text-white/55">
-              Pre-trigger audio classification unavailable ({classifyError}) — this level came from
-              your description.
+              Pre-trigger audio classification unavailable ({classifyError}) —
+              {triageResult
+                ? 'this level came from your description.'
+                : 'the alert went out on the default fan-out.'}
             </p>
           {/if}
         </div>

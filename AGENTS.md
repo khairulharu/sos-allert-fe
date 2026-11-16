@@ -62,7 +62,14 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
 - Both files are mirrored from `../backend/api/`. The backend copy remains the
   source of truth; re-copy after backend API changes. The frontend copy exists
   so a session opened in this repo has the contract without leaving the
-  workspace. Last re-copy: pentest F-6/F-7/F-9/F-11/F-12 — `POST /api/sos`
+  workspace. Last re-copy: #54/#55 — `POST /api/sos/classify` and
+  `POST /api/sos/{alertId}/media` now answer `transcription_status: "empty"`
+  for a silent/noise clip (no transcript, no triage; classify is `200`, not
+  `502`), and `severity` is optional on `AlertDetailResponse` (`absent` = never
+  classified, `0` = a real lowest score), from backend `a4d479d` plus the
+  API-doc working tree. Read `docs/api-changes.md` → "Transkrip audio" and
+  "`severity` 0 adalah skor nyata" before touching the audio/triage flow.
+  Previous re-copy: pentest F-6/F-7/F-9/F-11/F-12 — `POST /api/sos`
   now takes `client_severity`/`client_summary` (a labelled claim, never the
   triage; the server triage comes from `POST /api/sos/classify`, valid 2 min and
   single use, or from `description`), `/api/sos/classify` is throttled
@@ -87,7 +94,10 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `RESPONDER_ADDED` frame at `6824363`.
 - Handoff backend (perubahan kontrak dan yang belum diimplementasi):
   `docs/api-changes.md`, mirror dari `../backend/docs/api-changes.md` — jangan
-  diedit di repo ini. Bagian "Media insiden (audio/video)" mencatat endpoint
+  diedit di repo ini. Bagian "Transkrip audio" mencatat status `empty` untuk
+  klip senyap dan reset state `transcript` yang wajib di `AlertFlow.svelte`;
+  "`severity` 0 adalah skor nyata" mencatat `AlertDetailResponse.severity`
+  yang opsional. Bagian "Media insiden (audio/video)" mencatat endpoint
   media yang sudah siap dipakai responder (`GET /api/sos/{alertId}/media`,
   `GET /api/sos/{alertId}/media/{mediaId}`) beserta gotcha-nya: endpoint butuh
   header `Authorization` (tidak bisa langsung jadi `<audio src>`), tidak ada
@@ -282,6 +292,15 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   tier table (Critical/High → 5 km, Medium → 2 km, Low → 1 km), so the severity
   word under the bar and the radius copy beside it can never disagree — never
   hardcode `>= 0.67` thresholds in a component again.
+- `src/lib/triage.js` — `normalizeTriage(payload)`, the single rule sheet for
+  the AI triage payloads. A classification exists only when
+  `emergency_type` is `DANGER`/`MEDICAL`/`ACCIDENT`; the type is the presence
+  marker, because a silent clip still arrives with Go's zero values
+  (`emergency_type: ""`, `severity: 0`, `transcription_status: "empty"`, #54).
+  `severity: 0` with a real type is kept as the lowest legitimate score (#55).
+  Every field comes from the payload passed in, so nothing is inherited from
+  the previous clip (#23). `isClassifiedAlert(alert)` reads the detail/inbox
+  convention: absent `severity` = never classified, `0` = a real score.
 - `src/lib/focus.js` — `trap(node, { initial })`, the Svelte action both
   full-screen dialogs use (`AlertFlow`, `AlertIncoming`). On mount it focuses the
   first `[data-autofocus]` (or first visible focusable) inside the node, wraps
@@ -453,9 +472,9 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   `doTrigger()` then runs three steps: `sosApi.classify(clip)` (pre-trigger, so
   the first fan-out uses the audio level — a `503`/`502`/offline failure just
   sets `classifyError` and the SOS goes out on the description triage), the
-  trigger with `emergency_type`/`severity`/`summary` when the classification
-  succeeded, and finally the evidence upload to `POST /api/sos/:id/media` with
-  the same clip. A blocked or failing microphone only downgrades the UI
+  trigger with only the normalised `emergency_type` when the clip classified,
+  and finally the evidence upload to `POST /api/sos/:id/media` with the same
+  clip. A blocked or failing microphone only downgrades the UI
   ("Sending without audio", `MIC_HELP` copy) and the SOS still goes out. The
   triage card leads the active screen (above the map) and is always rendered:
   header "AI triage · from your audio / from your description / not classified",
@@ -465,9 +484,19 @@ curl -s https://allert.my.id/assets/index-*.js | grep -c "from your audio"
   is known, and an "Audio transcript · 10 s clip" block — the quoted text, the
   transcription note (`disabled`/`too_large`/`empty`/`failed`), "No transcript
   was returned for this clip", or "No audio was recorded" when the microphone was
-  blocked. `applyTriage()` moves it off the description as the classify response,
-  the media response or an `ALERT_TRIAGE` frame lands; with no classification at
-  all it says so instead of disappearing. When the media response escalated the
+  blocked. `applyTriage()` replaces the card with the newest server snapshot
+  through `src/lib/triage.js`: a payload is a classification only when
+  `emergency_type` is one of `DANGER`/`MEDICAL`/`ACCIDENT`. A silent clip is
+  `200` with `{emergency_type:"", severity:0, transcription_status:"empty"}`
+  (#54), so it leaves the card unclassified; `severity: 0` with a real type is a
+  legitimate Low/1 km score (#55). Nothing is merged from the previous payload,
+  and `startCountdown()` resets the triage/transcript/media/responder state so
+  "Try again" cannot inherit the failed attempt. The transcript is assigned per
+  clip (`transcript = response.transcript || ''`) and tied to the uploaded media
+  id, so a silent clip never keeps the previous clip's words. With no
+  classification the card says "Classification unavailable", uses a neutral
+  icon, hides the severity bar and keeps the default 1 km copy; a transcript
+  without a type says it is transcript-only. When the media response escalated the
   fan-out it also adds "+N responders at the wider radius" and the notified count
   includes them. The active screen carries its own map
   (168 px: the live pin from the tracking socket, the fan-out radius circle at
@@ -809,12 +838,13 @@ followed it. Regressions here were what the review called out, so keep them.
 No frontend test suite. Run `npm run build` and verify the actual UI in a
 browser at `http://localhost:5173` with the backend running.
 
-Seven behaviours are covered by regression scripts (six run the real app
+Nine behaviours are covered by regression scripts (seven run the real app
 against a mock API on :3000 via the Vite dev server and headless Chrome;
-`test:push` needs no browser), and CI runs all of them. Every browser script
-drives a 390×844 phone viewport (`scripts/mobile-viewport.mjs`): the desktop
-showcase hides the mobile shell from 1024 px up, so Playwright's default
-1280×720 context resolves the auth fields but reports them invisible.
+`test:push` and `test:triage` need no browser), and CI runs all of them. Every
+browser script drives a 390×844 phone viewport
+(`scripts/mobile-viewport.mjs`): the desktop showcase hides the mobile shell
+from 1024 px up, so Playwright's default 1280×720 context resolves the auth
+fields but reports them invisible.
 
 - `npm run test:signout` — sign-out with a location request in flight leaves no
   unauthenticated request behind (issue #6).
@@ -831,6 +861,14 @@ showcase hides the mobile shell from 1024 px up, so Playwright's default
   four simultaneous 401s still produce one `DELETE /api/users`.
 - `npm run test:resolve` — a failing `POST /resolve` keeps the active screen and
   reports the failure, and a retry after recovery reaches "You're marked safe".
+- `npm run test:triage` — Node-only rules for `src/lib/triage.js`: an empty
+  type with `severity: 0` stays unclassified, `severity: 0` with a real type is
+  preserved, unknown enums are rejected, scores are clamped, and successive
+  payloads never inherit from each other (#23/#54/#55).
+- `npm run test:triage-flow` — drives a failed trigger, a silent retry, a
+  `severity: 0` classification and an unclassified trigger through the real SOS
+  sheet: no old type/transcript survives the retry, no stale type is POSTed,
+  Low/1 km is shown for score 0, and a missing triage block stays neutral.
 - `npm run test:push` — evaluates `public/sw.js` in a Node sandbox: the
   notification carries `data.alert_id`, a tap on an open window posts
   `{type:'sos-alert', alert_id}`, a cold start opens `/?alert=<id>`.

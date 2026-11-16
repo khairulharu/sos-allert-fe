@@ -13,7 +13,9 @@
     "test:ws": "node scripts/test-ws-auth.mjs",
     "test:push": "node scripts/test-push-click.mjs",
     "test:session": "node scripts/test-session-401.mjs",
-    "test:resolve": "node scripts/test-resolve-failure.mjs"
+    "test:resolve": "node scripts/test-resolve-failure.mjs",
+    "test:triage": "node scripts/test-triage.mjs",
+    "test:triage-flow": "node scripts/test-triage-flow.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

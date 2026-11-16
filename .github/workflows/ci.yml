@@ -64,3 +64,9 @@ jobs:
 
       - name: Regression — resolve failure stays active
         run: npm run test:resolve
+
+      - name: Regression — triage normalisation rules
+        run: npm run test:triage
+
+      - name: Regression — triage card does not inherit or invent a type
+        run: npm run test:triage-flow

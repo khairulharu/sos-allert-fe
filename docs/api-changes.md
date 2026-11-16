@@ -62,19 +62,25 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 
 ## Status copy
 
-- Re-copy terakhir: pentest F-6/F-7/F-9/F-11/F-12 (klaim client vs triage
+- Re-copy terakhir: #54/#55 — transkrip audio senyap jadi
+  `transcription_status: "empty"` (tanpa transcript/triage) dan `severity`
+  `0` adalah skor sah sementara `AlertDetailResponse.severity` absen bila
+  insiden belum diklasifikasi, dari backend `a4d479d` plus update
+  `api/api.md` + `api/api-spec.json` pada working tree handoff ini.
+- Re-copy sebelumnya: pentest F-6/F-7/F-9/F-11/F-12 (klaim client vs triage
   server, rate limit `classify`, allowlist endpoint push, recover + security
   headers, media download) dari backend `d931206`.
-- `api/api.md` + `api/api-spec.json` diperbarui di backend untuk keempat
-  perubahan itu (`TriggerSOSRequest.client_*`, `SOSCreatedResponse.client_*`,
-  `SOSCreatedResponse.triage`, `classify` 429/503, `push/subscriptions` 400,
-  media `attachment` + allowlist Content-Type).
-- Sudah disalin ke `../frontend/api/` — `md5sum` keempat file sama per saat
-  handoff ini.
+- `api/api.md` + `api/api-spec.json` diperbarui di backend untuk perubahan
+  tersebut (`AlertDetailResponse.severity` opsional, `ClassifyResponse`/
+  `AlertMediaResponse.transcription_status` `empty` untuk audio senyap).
+- Sudah disalin ke `../frontend/api/` (`api.md` + `api-spec.json`,
+  byte-identical — `md5sum` sama) dan `../frontend/docs/api-changes.md`
+  (salinan dokumen ini + banner "jangan diedit").
 - Baris "Last re-copy" di `../frontend/AGENTS.md` sudah diperbarui.
 - Dokumen ini juga di-mirror ke `../frontend/docs/api-changes.md` (dengan banner
   "jangan diedit di sini"). Sumber kebenaran tetap salinan backend ini — kalau
-  ada perubahan, edit di sini lalu re-copy.
+  ada perubahan, edit di sini lalu re-copy. `docs/SPEC-alerts-history.md`
+  **bukan** mirror: versi frontend adalah spec UI tersendiri.
 
 ## Media insiden (audio/video)
 
@@ -356,6 +362,265 @@ Catatan tambahan:
   (`audio/*`, `video/mp4|webm`, `image/jpeg|png`); tipe lain jadi
   `application/octet-stream`. Blob dari `fetch` tetap bisa diputar, tapi kalau
   kode memeriksa `blob.type`, siapkan fallback.
+
+## `X-Idempotency-Key` di-scope per user (#35)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku.
+
+- Redis key sekarang `idempotency:sos:<user_id>:<key>`. `Retry` dari user yang
+  sama dengan key yang sama tetap `201` replay alert yang sama (TTL 5 menit
+  seperti sebelumnya).
+- User **berbeda** dengan key yang sama tidak lagi saling menimpa: masing-masing
+  dapat alert sendiri. Klien tidak boleh mengandalkan key global untuk dedup
+  lintas akun/device — kirim key yang unik per percobaan trigger (mis. UUID).
+- Server juga memverifikasi `alert.sender_id` saat replay; id alert milik user
+  lain tidak pernah dikembalikan.
+- `409` hanya muncul untuk retry milik user itu sendiri ketika trigger pertama
+  masih berjalan (key sudah diklaim, hasil belum tersimpan).
+
+## Klaim idempotency dilepas saat trigger gagal (#36)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku.
+
+- Sebelumnya, trigger yang gagal (lokasi tidak ada, gagal tulis DB, dan dulu
+  juga gagal mencari penerima) meninggalkan klaim `pending` selama TTL 5
+  menit, sehingga retry dengan key yang sama dijawab `409` padahal belum ada
+  alert yang dibuat.
+- Sekarang klaim dilepas pada setiap kegagalan sebelum hasil tersimpan: retry
+  dengan `X-Idempotency-Key` yang sama setelah percobaan gagal akan diproses
+  normal dan mengembalikan `201` (bukan `409`).
+- Klaim hanya dilepas selama nilainya masih `pending` (compare-and-delete),
+  jadi hasil trigger yang sudah selesai tidak pernah terhapus dan tetap
+  di-replay seperti sebelumnya.
+- Klien tidak perlu mengubah apa pun: key yang sama tetap aman dipakai ulang
+  untuk retry setelah error jaringan/server.
+
+## Fan-out SOS fail-open setelah alert tersimpan (#37)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku, plus satu metrik baru.
+
+- Sebelumnya, kalau pencarian penerima gagal (`GEOSEARCH`/`users:last_seen`
+  error di Redis), `POST /api/sos` mengembalikan `5xx` **setelah** alert
+  tersimpan: tidak ada satu pun notifikasi (termasuk SMS kontak darurat), dan
+  alert tertinggal `TRIGGERED` selamanya.
+- Sekarang fan-out fail-open: alert tetap dibuat, dispatch tetap dijalankan
+  dengan daftar penerima kosong (jadi push tidak terkirim ke siapa pun, tetapi
+  SMS fallback ke emergency contacts tetap jalan), dan response tetap `201`
+  dengan `recipients_notified: 0`.
+- `5xx` hanya tersisa untuk kegagalan yang membuat alert sendiri tidak
+  tersimpan (atau lookup lokasi pengirim sebelum alert dibuat).
+- Klien tidak perlu retry saat melihat `201` dengan `recipients_notified: 0`:
+  alert sudah tercatat dan muncul di `GET /api/sos/active`; retry dengan
+  `X-Idempotency-Key` yang sama akan me-replay alert itu, bukan membuat
+  duplikat.
+- Metrik baru di `GET /metrics`: `sos_fanout_failures_total` (counter trigger
+  yang di-dispatch dengan fan-out kosong karena lookup penerima gagal). Metrik
+  lama `sos_dispatch_latency_ms`, `push_delivery_failures_total`,
+  `active_sos_count` tidak berubah.
+
+## Hardening keamanan (#41)
+
+Enam temuan review, semuanya mengubah kontrak HTTP di beberapa titik. Ringkas:
+
+### 1. Safe PIN salah → `403`, bukan `401`
+
+`POST /api/sos/{alertId}/cancel` dengan PIN salah sekarang menjawab **`403`**
+dengan body `{"errors":"invalid safe PIN"}`. `401` sekarang **hanya** berarti
+sesi tidak valid/kadaluarsa.
+
+Frontend: jangan logout user ketika menerima `403` dari cancel — tampilkan
+"PIN salah, coba lagi". Logout tetap hanya untuk `401`.
+
+### 2. Kontak darurat divalidasi + dibatasi
+
+`POST /api/emergency-contacts` sekarang menolak dengan **`422`** (bukan `200`
+dan bukan `500`) bila:
+
+| Kondisi | `errors` |
+|---|---|
+| nomor bukan E.164 | `phone number must be in E.164 format, e.g. +6281234567890` |
+| sudah ada 10 kontak | `too many emergency contacts (max 10)` |
+| nomor sudah terdaftar untuk user itu | `this phone number is already an emergency contact` |
+
+- E.164 = `+` lalu 8–15 digit (digit pertama bukan `0`). Spasi, `-`, `(`, `)`,
+  dan `.` dibuang sebelum validasi, dan nomor **disimpan dalam bentuk
+  kanonik** (`+62 812-3456-7890` → `+6281234567890`).
+- Kode premium/short code (`1234`) dan format nasional tanpa `+`
+  (`081234567890`) ditolak.
+- Maksimum **10 kontak per user** (bukan per nomor). Nomor yang sama tidak
+  bisa didaftarkan dua kali.
+- `GET /api/emergency-contacts` tidak berubah: baris lama yang tidak sesuai
+  aturan baru tetap terbaca apa adanya (tidak difilter/diubah).
+
+Frontend: kirim nomor lengkap dengan kode negara (`+62…`). Tangani `422`
+dengan menampilkan `errors` di field nomor telepon.
+
+### 3. Baca alert orang lain → `404` (bukan `403`)
+
+Untuk user yang **bukan** peserta (bukan sender/responder), endpoint baca
+sekarang menjawab `404` — sama seperti id acak — sehingga id alert tidak bisa
+ditebak:
+
+- `GET /api/sos/{alertId}/media`
+- `GET /api/sos/{alertId}/media/{mediaId}`
+- `GET /api/sos/{alertId}/breadcrumbs`
+- frame auth `WS /ws/sos/{alertId}/track` (frame error `{"error":"alert not found"}`)
+
+`GET /api/sos/{alertId}` memang sudah `404`. Aksi tulis (`cancel`,
+`acknowledge`, `resolve`, `respond`, `POST …/media`, `POST …/breadcrumbs`)
+**tetap `403`** untuk non-peserta; tidak ada perubahan di sana.
+
+Frontend: perlakukan `404` pada endpoint baca di atas sebagai "insiden tidak
+ditemukan / sudah tidak tersedia", bukan "tidak punya akses".
+
+### 4. Endpoint Web Push wajib `https` + tidak bisa diambil alih
+
+- `POST /api/push/subscriptions` menolak (`400`) endpoint yang bukan `https`,
+  termasuk host yang ada di allowlist (`http://fcm.googleapis.com/...`).
+  Allowlist host tetap berlaku seperti sebelumnya.
+- Sebuah `endpoint` sekarang **milik user yang mendaftarkannya lebih dulu**.
+  User lain yang mengirim endpoint yang sama mendapat **`409`**
+  (`push endpoint is already registered to another user`) dan baris lama
+  tidak berubah. User yang sama tetap bisa re-subscribe (upsert/refresh).
+
+Frontend: kalau subscribe mengembalikan `409`, jangan retry dengan endpoint
+yang sama; pakai `PushSubscription` milik browser itu sendiri atau tampilkan
+"push tidak tersedia".
+
+### 5. Body `5xx` generik
+
+Semua response `>= 500` sekarang `{"errors":"internal server error"}`; detail
+(SQL, path file, error provider) hanya masuk log server. Ini juga berlaku untuk
+`502`/`503` yang sudah ada (mis. STT tidak dikonfigurasi, limiter Redis error):
+**status code tetap sama**, hanya body-nya generik. Jadi percabangan di
+frontend harus memakai status code, bukan isi `errors`. Pesan `4xx` tidak
+berubah, jadi pesan validasi tetap bisa ditampilkan.
+
+## `POST /api/sos/{alertId}/respond` dua kali → `409` (#42)
+
+> **Untuk agent frontend.** Ini perubahan kontrak: satu status code baru.
+
+- Sebelumnya setiap `respond` selalu menyisipkan baris baru, jadi double tap
+  atau retry setelah timeout bisa menyimpan responder yang sama dua kali dan
+  menggelembungkan `responders_en_route` / daftar `responders`.
+- Sekarang `alert_responses` punya unique index `(alert_id, responder_id)`.
+  Jawaban kedua dari responder yang sama tidak menulis baris baru dan
+  dijawab **`409`** dengan body
+  `{"errors":"responder has already responded to this alert"}`.
+- Respons `200` pertama tetap sama (`response_id`, `eta_seconds`,
+  `victim_distance_meters`). Klien tidak perlu mengubah apa pun untuk kasus
+  sukses; kalau menerima `409`, anggap "sudah tercatat" — jangan retry, dan
+  tampilkan status responder dari `GET /api/sos/{alertId}`.
+- Responder **berbeda** tidak terpengaruh: masing-masing tetap mendapat `200`
+  dan satu entri di `responders[]`.
+- `403` (bukan peserta, atau sender mencoba respond) dan `409` untuk alert
+  yang sudah `RESOLVED`/`CANCELLED` tidak berubah.
+
+## WebSocket tracking: batas koneksi + keepalive (#42)
+
+> **Untuk agent frontend.** Status code baru saat handshake dan close code baru.
+
+- `WS /ws/sos/{alertId}/track` sekarang punya batas koneksi bersamaan:
+  global (`sos.ws_max_connections`, default 500), per IP
+  (`sos.ws_max_per_ip`, default 10) dan per user (`sos.ws_max_per_user`,
+  default 3, dihitung setelah frame `auth` diverifikasi).
+- Kalau batas global/IP sudah penuh, **handshake ditolak** dengan `429` +
+  header `Retry-After: 5` (bukan upgrade lalu diputus). Frontend: jangan
+  retry loop; tampilkan "live tracking tidak tersedia" dan coba lagi setelah
+  `Retry-After`, atau fallback ke polling `GET /api/sos/{alertId}`.
+- Kalau batas per user penuh, socket **sempat terbuka** lalu langsung dikirim
+  frame `{"error":"too many live-tracking connections, retry shortly"}` dan
+  ditutup dengan close code `1013` (try again later) — `auth_ok` tidak pernah
+  dikirim. Frontend: tutup tab/socket lain dulu, jangan reconnect otomatis.
+- Keepalive: server mengirim ping tiap ~25 s dan memutus klien yang tidak
+  menjawab dalam ~60 s (browser menjawab otomatis; klien native harus membaca
+  frame ping). Setiap frame server punya write deadline 5 s, jadi klien yang
+  berhenti membaca akan diputus, bukan menggantung slot.
+- Tidak ada perubahan pada frame `auth`/`auth_ok`, `LOCATION_UPDATE`,
+  `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`.
+
+## `POST /api/sos` tanpa lokasi → `422` (#42)
+
+> **Untuk agent frontend.** Status code berubah dari `500` menjadi `422`.
+
+- Kalau body `POST /api/sos` tidak memuat `latitude`/`longitude` **dan** user
+  belum pernah mengirim heartbeat (`PUT /api/location`), server sekarang
+  menjawab **`422`** dengan
+  `{"errors":"location is required: send latitude and longitude in the SOS body or PUT /api/location first"}`.
+- Sebelumnya kondisi ini keluar sebagai `500` dengan body generik, jadi user
+  pertama kali tidak tahu apa yang harus diperbaiki.
+- Frontend: kirim koordinat di body SOS bila tersedia (paling aman), atau
+  pastikan `PUT /api/location` sudah sukses sebelum trigger; kalau menerima
+  `422`, tampilkan pesan lokasi dan coba lagi setelah lokasi tersedia.
+
+## Transkrip audio: klip senyap jadi `empty`, bukan teks halusinasi (#54)
+
+> **Untuk agent frontend.** Ada perilaku baru + satu bug state yang harus
+> diperbaiki di `AlertFlow.svelte`.
+
+Whisper (Groq `whisper-large-v3-turbo`) dulu mengubah audio senyap/noise
+menjadi teks subtitle seperti `"Terima kasih telah menonton!"` atau `"Hai"`,
+lalu teks itu disimpan sebagai `transcript` dan dipakai triage. Sekarang
+backend memutuskan sendiri:
+
+- Request STT mengirim `response_format=verbose_json` dan `prompt` kosakata
+  darurat Indonesia (fallback ke `json` bila provider menolak).
+- Hasil dianggap **tidak ada suara** bila: semua segmen `no_speech_prob` ≥ 0.6,
+  hanya ada repetisi (`compression_ratio` > 2.4), `avg_logprob` sangat rendah
+  pada teks pendek, durasi < 0.5 s, atau teks pendek yang persis frasa
+  halusinasi umum ("terima kasih", "hai", "something happen…", dst).
+- Kasus itu mengembalikan `transcription_status: "empty"`, `transcript` kosong,
+  **tidak** memanggil triage, dan **tidak** mengirim `ALERT_TRIAGE`.
+- `POST /api/sos/classify` untuk klip senyap menjawab **`200`** dengan
+  `{"transcription_status":"empty"}` — bukan `502`. `502` sekarang hanya untuk
+  provider yang benar-benar error.
+- `transcribed_at` hanya diisi ketika provider benar-benar menjawab (sukses
+  atau `empty`); transkripsi yang gagal tidak lagi punya timestamp.
+
+**Perbaikan wajib di FE (akar "transcript tidak sesuai audio"):**
+`AlertFlow.svelte` menyimpan `transcript` sebagai state satu layar dan hanya
+menimpanya bila nilainya truthy (`if (classified?.transcript)` baris ~246 dan
+`if (result?.transcript)` baris ~513). Akibatnya klip baru yang senyap tetap
+menampilkan transkrip klip sebelumnya. Lakukan:
+
+1. Reset `transcript`/`transcriptionStatus`/`triageFromAudio` setiap SOS baru
+   dimulai **dan** di awal `uploadClip`/sebelum `classify`.
+2. Tetapkan hasil apa adanya: `transcript = result?.transcript || ''` dan
+   `transcriptionStatus = result?.transcription_status || ''` — jangan
+   mempertahankan teks lama saat response tidak membawa transkrip.
+3. Tampilkan transkrip **per item** dari `GET /api/sos/{alertId}/media`
+   (`AlertMedia.svelte` sudah benar); panel "Audio transcript · N s clip" di
+   layar aktif sebaiknya terikat ke media id klip itu, bukan state global.
+4. Kalau `classify` gagal/`empty`, jangan tampilkan transkrip dari klip lain —
+   tampilkan catatan status (`empty`, `failed`, `disabled`, `too_large`).
+
+## `severity` 0 adalah skor nyata, absen = belum diklasifikasi (#55)
+
+> **Untuk agent frontend.** Tipe JSON `severity` di detail/history berubah
+> menjadi optional number.
+
+- Dulu skor 0 (level terendah rubrik Jev) dibuang dan kolomnya tetap `NULL`,
+  sehingga UI jatuh ke default. Sekarang 0 disimpan dan dikirim sebagai `0`.
+- `alerts.severity` `NULL` tetap berarti "belum pernah diklasifikasi". Di
+  `AlertDetailResponse` (`GET /api/sos/{alertId}`, item `history`, `inbox`),
+  field `severity` **absen** untuk kasus itu dan **ada** (boleh `0`) bila
+  klasifikasi menghasilkan skor.
+- `triage.severity` di response `POST /api/sos`, `POST /api/sos/classify`,
+  `POST .../media`, dan frame `ALERT_TRIAGE` tidak berubah tipenya (number),
+  termasuk saat nilainya 0.
+- Awalan `radius` tidak berubah: skor 0 tetap memakai radius 1 km.
+- Triage tanpa `emergency_type` (mis. engine hanya mengembalikan summary) kini
+  dianggap **tanpa sinyal**, sama seperti `AITriage`: tidak menimpa
+  `emergency_type` yang sudah ada dan tidak mengirim `ALERT_TRIAGE`.
+
+Yang perlu dicek FE: jangan lagi memakai `severity` yang hilang sebagai "0";
+`Number.isFinite` pada nilai `undefined` sudah menghasilkan `false`, jadi
+kartu sebaiknya menampilkan state "belum diklasifikasi" alih-alih bar 0%.
+Kombinasi dengan perbaikan triage di atas menutup keluhan "tipe darurat
+menempel dari klip sebelumnya".
 
 ## Yang belum dikerjakan
 
